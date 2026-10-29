@@ -1,6 +1,8 @@
 import { createApp, computed, onMounted, ref } from 'vue';
+import { api, send } from './api';
 import './styles.css';
 
+// 类型对应后端 JSON 契约。金额/比率保留服务端字符串，页面不重新计算规则。
 type ID = string | number;
 interface Organization { id: ID; code: string; name: string; level: number; parent_id: ID | null; region_id: ID | null }
 interface Indicator { id: string; name: string; unit: string; frequency: string; description: string }
@@ -13,24 +15,29 @@ interface Evidence { id: ID; indicator_id: string; indicator_name: string; value
 interface Receipt { id: ID; channel: string; status: string; created_at: string }
 interface CheckResult { org_id: ID; org_name: string; rule_id: ID; indicator_id: string; status: string; reason: string }
 interface Letter { id: ID; case_id: ID; revision: number; content: string; status: string; evidence_hash: string; created_at: string; receipt: Receipt | null }
-interface RiskCase { id: ID; run_id: ID; org_id: ID; org_name: string; region_name: string; data_date: string; risk_types: string[]; status: string; evidence_count: number; headline: string; evidence?: Evidence[]; analysis?: { mode: string; facts: string[]; hypotheses: string[]; checks: string[]; limitations: string[] }; letter?: Letter | null }
-interface Bootstrap { meta: { app_name: string; version: string; demo: boolean; agent_mode: string; data_date: string; rank_note: string }; summary: { region_count: number; org_count: number; indicator_count: number; enabled_rule_count: number; case_count: number; letter_count: number }; organizations: Organization[]; indicators: Indicator[]; rules: Rule[]; snapshots: Snapshot[]; latest_run: Run | null }
-
-async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers = new Headers(options.headers);
-  if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
-  const response = await fetch(path, { ...options, headers });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    const detail = payload?.detail ?? payload?.message ?? `请求失败（${response.status}）`;
-    throw new Error(typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map((item) => item.msg || JSON.stringify(item)).join('；') : JSON.stringify(detail));
-  }
-  return payload as T;
+interface Analysis { mode: string; facts: string[]; hypotheses: string[]; checks: string[]; limitations: string[] }
+interface ImportResult { snapshot_id: ID; row_count: number; warnings: string[] }
+// 列表只含摘要；打开详情后，接口才返回 evidence、analysis 与 letter。
+interface RiskCase {
+  id: ID;
+  run_id: ID;
+  org_id: ID;
+  org_name: string;
+  region_name: string;
+  data_date: string;
+  risk_types: string[];
+  status: string;
+  evidence_count: number;
+  headline: string;
+  evidence?: Evidence[];
+  analysis?: Analysis;
+  letter?: Letter | null;
 }
-const send = <T>(path: string, body: unknown, method = 'POST') => api<T>(path, { method, body: JSON.stringify(body) });
+interface Bootstrap { meta: { app_name: string; version: string; demo: boolean; agent_mode: string; data_date: string; rank_note: string }; summary: { region_count: number; org_count: number; indicator_count: number; enabled_rule_count: number; case_count: number; letter_count: number }; organizations: Organization[]; indicators: Indicator[]; rules: Rule[]; snapshots: Snapshot[]; latest_run: Run | null }
 
 createApp({
   setup() {
+    // boot 保存目录和概览；当前查看的运行与表单选择分开，切换快照不会改写历史结果。
     const boot = ref<Bootstrap | null>(null);
     const loading = ref(true);
     const fatal = ref('');
@@ -55,7 +62,7 @@ createApp({
     const ruleInputs = ref<Record<string, string>>({});
     const fileInput = ref<HTMLInputElement | null>(null);
     const importFile = ref<File | null>(null);
-    const importResult = ref<{ snapshot_id: ID; row_count: number; warnings: string[] } | null>(null);
+    const importResult = ref<ImportResult | null>(null);
     const orgQuery = ref('');
     const indicatorQuery = ref('');
     const nav = [
@@ -81,6 +88,7 @@ createApp({
     const visibleCases = computed(() => cases.value.filter((item) => (!regionFilter.value || item.region_name === regionFilter.value) && (!query.value || `${item.org_name} ${item.headline} ${item.region_name}`.includes(query.value))));
     const visibleIndicators = computed(() => boot.value?.indicators.filter((indicator) => !indicatorQuery.value || `${indicator.id} ${indicator.name} ${indicator.description}`.toLowerCase().includes(indicatorQuery.value.toLowerCase())) ?? []);
     const visibleChecks = computed(() => checks.value.filter((item) => item.status === checkFilter.value));
+    // letter 保存服务端已持久化版本，letterText 是编辑缓冲；未保存内容不能审核或下发。
     const letterDirty = computed(() => Boolean(letter.value && letterText.value !== letter.value.content));
     const configuredRules = computed(() => boot.value?.rules.filter((rule) => rule.enabled && !rule.needs_config).length ?? 0);
     const coverageTotal = computed(() => Number(activeSummary.value.normal ?? 0) + Number(activeSummary.value.triggered ?? 0) + Number(activeSummary.value.insufficient ?? 0));
@@ -106,42 +114,92 @@ createApp({
     const statusClass = (status: string) => status === 'simulated_sent' ? 'muted' : status === 'approved' || status === 'completed' ? 'green' : status === 'draft' ? 'blue' : status === 'failed' ? 'red' : 'amber';
     const reasonText = (value: unknown) => typeof value === 'string' ? value : value && typeof value === 'object' ? String((value as Record<string, unknown>).reason ?? (value as Record<string, unknown>).description ?? JSON.stringify(value)) : String(value);
     const children = (region: Organization) => societies.value.filter((org) => (String(org.parent_id) === String(region.id) || String(org.region_id) === String(region.id)) && (!orgQuery.value || `${org.name} ${org.code} ${region.name}`.includes(orgQuery.value)));
-    const notify = (message: string) => { toast.value = message; window.setTimeout(() => { if (toast.value === message) toast.value = ''; }, 4500); };
-    const setLetter = (item: Letter | null) => { letter.value = item; letterText.value = item?.content ?? ''; if (selectedCase.value) selectedCase.value.letter = item; };
+    const notify = (message: string) => {
+      toast.value = message;
+      window.setTimeout(() => {
+        if (toast.value === message) toast.value = '';
+      }, 4500);
+    };
+    // 创建、保存、审核与下发都采用接口返回的完整函件，统一同步正文和版本。
+    const setLetter = (item: Letter | null) => {
+      letter.value = item;
+      letterText.value = item?.content ?? '';
+      if (selectedCase.value) selectedCase.value.letter = item;
+    };
 
+    // 首次进入恢复最近一次结果；操作后的刷新只更新目录/概览，保留当前查看的批次。
     async function loadBootstrap(initial = false) {
       const data = await api<Bootstrap>('/api/bootstrap');
       boot.value = data;
-      if (!snapshotId.value || !data.snapshots.some((item) => String(item.id) === snapshotId.value)) snapshotId.value = String(data.snapshots[0]?.id ?? '');
-      for (const rule of data.rules) ruleInputs.value[String(rule.id)] = String(rule.kind === 'rank' ? rule.params.cutoff ?? 72 : rule.params.threshold ?? '');
+      if (!snapshotId.value || !data.snapshots.some((item) => String(item.id) === snapshotId.value)) {
+        snapshotId.value = String(data.snapshots[0]?.id ?? '');
+      }
+      for (const rule of data.rules) {
+        ruleInputs.value[String(rule.id)] = String(rule.kind === 'rank' ? rule.params.cutoff ?? 72 : rule.params.threshold ?? '');
+      }
       if (initial) {
         currentRun.value = data.latest_run;
-        if (data.latest_run) { snapshotId.value = String(data.latest_run.snapshot_id); await loadCases(data.latest_run.id); }
+        if (data.latest_run) {
+          snapshotId.value = String(data.latest_run.snapshot_id);
+          await loadCases(data.latest_run.id);
+        }
       }
       runs.value = await api<Run[]>('/api/runs');
     }
+
     async function initialize() {
-      loading.value = true; fatal.value = '';
-      try { await loadBootstrap(true); } catch (err) { fatal.value = err instanceof Error ? err.message : String(err); }
-      finally { loading.value = false; }
+      loading.value = true;
+      fatal.value = '';
+      try {
+        await loadBootstrap(true);
+      } catch (err) {
+        fatal.value = err instanceof Error ? err.message : String(err);
+      } finally {
+        loading.value = false;
+      }
     }
+
+    // 用户操作共享忙碌锁和错误出口，避免重复提交；失败时保留页面数据供核对或重试。
     async function action(name: string, operation: () => Promise<void>) {
       if (busy.value) return;
-      busy.value = name; error.value = '';
-      try { await operation(); } catch (err) { error.value = err instanceof Error ? err.message : String(err); }
-      finally { busy.value = ''; }
+      busy.value = name;
+      error.value = '';
+      try {
+        await operation();
+      } catch (err) {
+        error.value = err instanceof Error ? err.message : String(err);
+      } finally {
+        busy.value = '';
+      }
     }
-    async function loadCases(runId: ID) { cases.value = await api<RiskCase[]>(`/api/cases?run_id=${encodeURIComponent(String(runId))}`); }
+
+    async function loadCases(runId: ID) {
+      cases.value = await api<RiskCase[]>(`/api/cases?run_id=${encodeURIComponent(String(runId))}`);
+    }
+
     const runAnalysis = () => action('run', async () => {
       if (!snapshotId.value) throw new Error('请先选择一个可用数据快照。');
       const run = await send<Run>('/api/runs', { snapshot_id: snapshotId.value, risk_topic: topic.value });
       currentRun.value = run;
-      showChecks.value = false; checks.value = [];
-      await loadCases(run.id); await loadBootstrap();
-      tab.value = 'monitor'; regionFilter.value = ''; query.value = '';
+      showChecks.value = false;
+      checks.value = [];
+      await loadCases(run.id);
+      await loadBootstrap();
+      tab.value = 'monitor';
+      regionFilter.value = '';
+      query.value = '';
       notify(`监测完成：${run.summary.case_count ?? cases.value.length} 家行社形成风险事项。`);
     });
-    const openRun = (run: Run) => action('history', async () => { currentRun.value = run; snapshotId.value = String(run.snapshot_id); showChecks.value = false; checks.value = []; await loadCases(run.id); tab.value = 'monitor'; regionFilter.value = ''; query.value = ''; });
+    const openRun = (run: Run) => action('history', async () => {
+      currentRun.value = run;
+      snapshotId.value = String(run.snapshot_id);
+      showChecks.value = false;
+      checks.value = [];
+      await loadCases(run.id);
+      tab.value = 'monitor';
+      regionFilter.value = '';
+      query.value = '';
+    });
     const viewChecks = () => action('checks', async () => {
       if (!currentRun.value) return;
       checks.value = await api<CheckResult[]>(`/api/runs/${currentRun.value.id}/checks`);
@@ -149,9 +207,15 @@ createApp({
     });
     const openCase = (item: RiskCase) => action('case', async () => {
       const detail = await api<RiskCase>(`/api/cases/${encodeURIComponent(String(item.id))}`);
-      selectedCase.value = detail; setLetter(detail.letter ?? null); drawerTab.value = 'evidence';
+      selectedCase.value = detail;
+      setLetter(detail.letter ?? null);
+      drawerTab.value = 'evidence';
     });
-    const closeCase = () => { selectedCase.value = null; error.value = ''; };
+    const closeCase = () => {
+      selectedCase.value = null;
+      error.value = '';
+    };
+
     const createDraft = () => action('draft', async () => {
       if (!selectedCase.value) return;
       setLetter(await send<Letter>(`/api/cases/${selectedCase.value.id}/draft`, {}));
@@ -159,12 +223,17 @@ createApp({
       if (currentRun.value) await loadCases(currentRun.value.id);
       notify('提示函草稿已生成，数字与证据保持绑定。');
     });
+    // expected_revision 让后端拒绝过期编辑/审核；正文保存后由后端撤销旧审批。
     const saveLetter = () => action('save-letter', async () => {
       if (!letter.value) return;
-      setLetter(await send<Letter>(`/api/letters/${letter.value.id}`, { content: letterText.value, expected_revision: letter.value.revision }, 'PATCH'));
+      setLetter(await send<Letter>(`/api/letters/${letter.value.id}`, {
+        content: letterText.value,
+        expected_revision: letter.value.revision
+      }, 'PATCH'));
       if (currentRun.value) await loadCases(currentRun.value.id);
       notify('已保存新版本；修改后的函件需要重新审核。');
     });
+    // 前端阻止未保存正文被审核/下发，后端仍独立校验版本与状态。
     const approveLetter = () => action('approve', async () => {
       if (!letter.value) return;
       if (letterDirty.value) throw new Error('正文有未保存的修改，请先保存后再审核。');
@@ -180,6 +249,7 @@ createApp({
       await loadBootstrap();
       notify('模拟下发已完成。未向任何真实机构发送。');
     });
+    // 只提交可编辑参数；排名范围、指标与规则版本由后端管理。
     const saveRule = (rule: Rule) => action(`rule-${rule.id}`, async () => {
       const raw = ruleInputs.value[String(rule.id)]?.trim() ?? '';
       const params: { cutoff?: number; threshold?: number | null } = {};
@@ -188,21 +258,33 @@ createApp({
         if (!raw || !Number.isInteger(cutoff) || cutoff < 1 || cutoff > 82) throw new Error('排名起点必须是 1—82 之间的整数。');
         params.cutoff = cutoff;
       } else if (rule.kind === 'ratio') {
+        // 空白表示“待配置”，不能把 Number('') 得到的 0 当作正式阈值。
         const threshold = raw === '' ? null : Number(raw);
         if (threshold !== null && (!Number.isFinite(threshold) || threshold < 0 || threshold > 100)) throw new Error('占比阈值应为 0—100 之间的百分比数值，或留空。');
         params.threshold = threshold;
       }
       await send<Rule>(`/api/rules/${rule.id}`, { params }, 'PATCH');
-      await loadBootstrap(); notify('规则已保存。请重新运行监测以使用新配置。');
+      await loadBootstrap();
+      notify('规则已保存。请重新运行监测以使用新配置。');
     });
-    const toggleRule = (rule: Rule) => action(`toggle-${rule.id}`, async () => { await send<Rule>(`/api/rules/${rule.id}`, { enabled: !rule.enabled }, 'PATCH'); await loadBootstrap(); notify('规则状态已更新。历史运行结果保持不变。'); });
-    const chooseFile = (event: Event) => { importFile.value = (event.target as HTMLInputElement).files?.[0] ?? null; importResult.value = null; };
+    const toggleRule = (rule: Rule) => action(`toggle-${rule.id}`, async () => {
+      await send<Rule>(`/api/rules/${rule.id}`, { enabled: !rule.enabled }, 'PATCH');
+      await loadBootstrap();
+      notify('规则状态已更新。历史运行结果保持不变。');
+    });
+    const chooseFile = (event: Event) => {
+      importFile.value = (event.target as HTMLInputElement).files?.[0] ?? null;
+      importResult.value = null;
+    };
+    // 文件内容由导入接口统一校验，成功后只选中新快照，不自动启动监测。
     const upload = () => action('import', async () => {
       if (!importFile.value) throw new Error('请先选择 CSV 或 XLSX 文件。');
-      const form = new FormData(); form.append('file', importFile.value);
-      const result = await api<{ snapshot_id: ID; row_count: number; warnings: string[] }>('/api/import', { method: 'POST', body: form });
+      const form = new FormData();
+      form.append('file', importFile.value);
+      const result = await api<ImportResult>('/api/import', { method: 'POST', body: form });
       importResult.value = result;
-      await loadBootstrap(); snapshotId.value = String(result.snapshot_id);
+      await loadBootstrap();
+      snapshotId.value = String(result.snapshot_id);
       notify(`已导入 ${number(result.row_count)} 条记录，形成独立数据快照。`);
     });
     onMounted(initialize);

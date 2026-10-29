@@ -1,6 +1,7 @@
-"""Local v0.1 API: deterministic monitoring, explainable evidence, simulated delivery.
+"""本地业务 API：导入、规则监测、证据保存、函件审核与模拟下发。
 
-Run: python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+Pi 只负责选择辅助指标和分析证据；所有数据库写入及函件状态迁移由此处控制。
+启动：python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any, TypeVar
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -20,29 +22,36 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from .analysis import AnalysisError, provider
 from .models import (ROOT, Base, engine, SessionLocal, Organization, Indicator, Snapshot, Observation,
                      Rule, AnalysisRun, RiskCase, Letter, LetterHistory, AuditLog, uid, now)
 from .seed import seed_database
 
+ModelType = TypeVar("ModelType", bound=Base)
 
-def hash_json(value):
+
+def hash_json(value: Any) -> str:
+    """按稳定键序计算摘要，用于运行去重及函件内容绑定。"""
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def timestamp(value):
+def timestamp(value: datetime) -> str:
+    # SQLite读取的时间可能不带时区；数据库中的时间统一按UTC写入。
     return value.replace(tzinfo=timezone.utc).isoformat() if value.tzinfo is None else value.isoformat()
 
 
-def number(value):
+def number(value: Decimal | None) -> str | None:
+    """API以十进制字符串传递数值，避免经过浮点数丢失精度。"""
     if value is None:
         return None
     text = format(Decimal(str(value)), "f")
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
-def display(value, unit):
+def display(value: Decimal | None, unit: str) -> str:
+    """生成展示文本；原始数值仍由number()保留，不用于反向计算。"""
     if value is None:
         return "缺失"
     val = Decimal(str(value))
@@ -53,53 +62,57 @@ def display(value, unit):
     return f"{val:,.2f}{unit}"
 
 
-def org_dict(row):
+# 序列化函数限定公开字段，避免直接暴露ORM对象及内部状态。
+def org_dict(row: Organization) -> dict:
     return {k: getattr(row, k) for k in ("id", "code", "name", "level", "parent_id", "region_id")}
 
 
-def metric_dict(row):
+def metric_dict(row: Indicator) -> dict:
     return {k: getattr(row, k) for k in ("id", "name", "unit", "frequency", "description")}
 
 
-def rule_dict(row):
+def rule_dict(row: Rule) -> dict:
     return {**{k: getattr(row, k) for k in ("id", "name", "kind", "indicator_id", "enabled", "params", "version", "description")},
             "needs_config": row.kind == "ratio" and row.params.get("threshold") is None}
 
 
-def snapshot_dict(row):
+def snapshot_dict(row: Snapshot) -> dict:
     return {"id": row.id, "name": row.name, "data_date": row.data_date.isoformat(), "source": row.source,
             "is_demo": row.is_demo, "row_count": row.row_count, "status": row.status}
 
 
-def run_dict(row):
+def run_dict(row: AnalysisRun) -> dict:
     return {"id": row.id, "status": row.status, "snapshot_id": row.snapshot_id, "created_at": timestamp(row.created_at),
             "summary": row.summary, "selection": row.selection}
 
 
-def case_dict(row):
+def case_dict(row: RiskCase) -> dict:
     return {"id": row.id, "run_id": row.run_id, "org_id": row.org_id, "org_name": row.org_name,
             "region_name": row.region_name, "data_date": row.data_date.isoformat(), "risk_types": row.risk_types,
             "status": row.status, "evidence_count": len(row.evidence), "headline": row.headline}
 
 
-def letter_dict(row):
+def letter_dict(row: Letter) -> dict:
     return {"id": row.id, "case_id": row.case_id, "revision": row.revision, "content": row.content,
             "status": row.status, "evidence_hash": row.evidence_hash, "created_at": timestamp(row.created_at), "receipt": row.receipt}
 
 
-def get_or_404(db, model, key):
+def get_or_404(db: Session, model: type[ModelType], key: str) -> ModelType:
+    """供各API复用的主键查询；不存在时统一返回404。"""
     value = db.get(model, key)
     if value is None:
         raise HTTPException(404, "记录不存在")
     return value
 
 
-def audit(db, action, key, details=None):
+def audit(db: Session, action: str, key: str, details: dict | None = None) -> None:
+    """操作记录随调用方事务提交，不能脱离业务写入单独成功。"""
     db.add(AuditLog(action=action, entity_id=key, details=details or {}))
 
 
 @asynccontextmanager
 async def lifespan(app):
+    """首次启动创建测试结构和样例；已有业务数据不会被种子覆盖。"""
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         seed_database(db)
@@ -129,6 +142,7 @@ class RulePayload(Payload):
 
 
 class RevisionPayload(Payload):
+    """调用方看到的版本号，用于拒绝覆盖其他人的新版本。"""
     expected_revision: int = Field(ge=1)
 
 
@@ -143,6 +157,7 @@ def health():
 
 @app.get("/api/bootstrap")
 def bootstrap():
+    """一次取得工作台初始化所需的目录、规则、快照和最近运行。"""
     with SessionLocal() as db:
         orgs = db.scalars(select(Organization).order_by(Organization.level, Organization.code)).all()
         indicators = db.scalars(select(Indicator).order_by(Indicator.id)).all()
@@ -184,6 +199,7 @@ def rules():
 
 @app.patch("/api/rules/{rule_id}")
 def patch_rule(rule_id: str, data: RulePayload):
+    """仅允许修改各类规则开放的参数；变动后递增版本，不改历史证据。"""
     with SessionLocal() as db:
         rule = get_or_404(db, Rule, rule_id)
         params = dict(rule.params)
@@ -216,17 +232,30 @@ def patch_rule(rule_id: str, data: RulePayload):
         return rule_dict(rule)
 
 
-def evaluate(rule, obs, metric, snapshot):
-    if rule.kind == "ratio" and rule.params.get("threshold") is None:
-        return "unconfigured", "占比阈值尚未配置"
+def observation_issue(
+    obs: Observation | None, metric: Indicator, snapshot: Snapshot,
+) -> str | None:
+    """返回数据不可用的原因；规则检测和辅助取证共用同一口径。"""
     if obs is None or obs.value is None or obs.quality_status != "valid":
-        return "insufficient", "指标数据缺失或质量状态不合格"
+        return "指标数据缺失或质量状态不合格"
     lag = (snapshot.data_date - obs.data_date).days
     allowed_lag = 120 if metric.frequency == "季" else 7
     if lag < 0 or lag > allowed_lag:
-        return "insufficient", f"数据期次不满足测试新鲜度策略（{metric.frequency}频指标允许滞后{allowed_lag}天）"
+        return f"数据期次不满足测试新鲜度策略（{metric.frequency}频指标允许滞后{allowed_lag}天）"
     if obs.unit != metric.unit:
-        return "insufficient", "指标单位与目录不一致"
+        return "指标单位与目录不一致"
+    return None
+
+
+def evaluate(
+    rule: Rule, obs: Observation | None, metric: Indicator, snapshot: Snapshot,
+) -> tuple[str, str]:
+    """执行一条规则，返回(状态, 原因)；只读取数据，不重排或写库。"""
+    if rule.kind == "ratio" and rule.params.get("threshold") is None:
+        return "unconfigured", "占比阈值尚未配置"
+    issue = observation_issue(obs, metric, snapshot)
+    if issue:
+        return "insufficient", issue
     if rule.kind == "rank":
         if obs.rank is None or obs.population != 82 or obs.rank_scope != "province_societies" or not 1 <= obs.rank <= 82:
             return "insufficient", "缺少有效的全省82家行社同口径排名"
@@ -241,7 +270,8 @@ def evaluate(rule, obs, metric, snapshot):
     return ("triggered" if hit else "normal"), "有效值非零，触发存在提醒；不据此认定风险上升" if hit else "有效值为零，未触发存在提醒"
 
 
-def evidence_record(rule, obs, metric, reason):
+def evidence_record(rule: Rule, obs: Observation, metric: Indicator, reason: str) -> dict:
+    """复制当期值及规则版本，后续配置变化不会改变已保存的证据。"""
     return {"id": uid(), "indicator_id": metric.id, "indicator_name": metric.name, "value": number(obs.value),
             "value_display": display(obs.value, obs.unit), "unit": obs.unit, "rank": obs.rank, "population": obs.population,
             "data_date": obs.data_date.isoformat(), "rule_id": rule.id, "rule_name": rule.name, "rule_kind": rule.kind,
@@ -250,6 +280,7 @@ def evidence_record(rule, obs, metric, reason):
 
 @app.post("/api/runs")
 def create_run(data: RunPayload):
+    """在同一事务中保存检查明细、Pi分析及风险事项；失败整批回滚。"""
     with SessionLocal() as db:
         snapshot = get_or_404(db, Snapshot, data.snapshot_id)
         if snapshot.status != "ready":
@@ -258,6 +289,7 @@ def create_run(data: RunPayload):
         all_rules = db.scalars(select(Rule).order_by(Rule.id)).all()
         frozen_rules = [rule_dict(r) for r in all_rules]
         normalized_topic = " ".join(data.risk_topic.split())
+        # 同一输入复用结果；规则版本或Agent配置变化后形成独立记录。
         key = hash_json({"snapshot": snapshot.id, "rules": frozen_rules, "risk_topic": normalized_topic,
                          "agent": provider.cache_identity})
         existing = db.scalar(select(AnalysisRun).where(AnalysisRun.run_key == key))
@@ -269,6 +301,7 @@ def create_run(data: RunPayload):
         observations = {(o.org_id, o.indicator_id): o for o in db.scalars(select(Observation).where(Observation.snapshot_id == snapshot.id))}
         selection = provider.select(normalized_topic, [metric_dict(m) for m in metrics.values()], [r.indicator_id for r in active_rules])
         counts = {k: 0 for k in ("evaluated", "triggered", "normal", "insufficient", "not_applicable", "unconfigured", "case_count")}
+        # 与ORM的JSON字段分开持有计数，最终赋新字典才能正确触发持久化。
         run = AnalysisRun(run_key=key, snapshot_id=snapshot.id, status="running", summary=dict(counts), selection=selection, rule_snapshot=frozen_rules)
         db.add(run)
         try:
@@ -298,12 +331,10 @@ def create_run(data: RunPayload):
             for metric_id in selection["indicator_ids"]:
                 obs = observations.get((org.id, metric_id))
                 metric = metrics[metric_id]
-                allowed_lag = 120 if metric.frequency == "季" else 7
-                if (obs and obs.value is not None and obs.quality_status == "valid"
-                        and obs.unit == metric.unit and 0 <= (snapshot.data_date - obs.data_date).days <= allowed_lag):
+                if observation_issue(obs, metric, snapshot) is None:
                     supporting.append({"indicator_id": metric_id, "value": number(obs.value), "value_display": display(obs.value, obs.unit), "data_date": obs.data_date.isoformat()})
             pending_cases.append({"case_key": org.id, "evidence": evidence, "supporting": supporting})
-        # One Node process per batch avoids repeatedly loading Pi for every society.
+        # 按批次启动一次Node进程，避免为每家行社重复加载Pi。
         analyses = provider.explain_batch(pending_cases)
         org_by_id = {org.id: org for org in orgs}
         for item in pending_cases:
@@ -353,7 +384,8 @@ def get_case(case_id: str):
         return {**case_dict(case), "evidence": case.evidence, "analysis": case.analysis, "letter": letter_dict(letter) if letter else None}
 
 
-def render_letter(case):
+def render_letter(case: RiskCase) -> str:
+    """数值正文直接来自固定证据；Agent只补充核查建议。"""
     facts = "\n".join(f"{i}. {e['indicator_name']}：{e['value_display']}，数据日期{e['data_date']}。{e['reason']}。" for i, e in enumerate(case.evidence, 1))
     checks = "\n".join(f"{i}. {text}" for i, text in enumerate(case.analysis.get("checks", []), 1))
     return (f"风险提示函（本地测试通用模板）\n\n致：{case.org_name}\n\n"
@@ -365,6 +397,7 @@ def render_letter(case):
 
 @app.post("/api/cases/{case_id}/draft")
 def draft_letter(case_id: str):
+    """每个事项只建立一份函件；重复请求返回已有草稿。"""
     with SessionLocal() as db:
         case = get_or_404(db, RiskCase, case_id)
         existing = db.scalar(select(Letter).where(Letter.case_id == case_id))
@@ -386,13 +419,23 @@ def draft_letter(case_id: str):
         return letter_dict(letter)
 
 
-def ensure_revision(letter, revision):
+def ensure_revision(letter: Letter, revision: int) -> None:
     if letter.revision != revision:
         raise HTTPException(409, "函件版本已变化，请刷新后重试")
 
 
+def letter_content_hash(letter: Letter) -> str:
+    """审批与发送共用绑定口径：正文、证据摘要和收函事项。"""
+    return hash_json({
+        "content": letter.content,
+        "evidence": letter.evidence_hash,
+        "case_id": letter.case_id,
+    })
+
+
 @app.patch("/api/letters/{letter_id}")
 def edit_letter(letter_id: str, data: EditPayload):
+    """编辑产生新修订并使原审批失效；条件UPDATE防止并发覆盖。"""
     with SessionLocal() as db:
         letter = get_or_404(db, Letter, letter_id)
         ensure_revision(letter, data.expected_revision)
@@ -415,13 +458,14 @@ def edit_letter(letter_id: str, data: EditPayload):
 
 @app.post("/api/letters/{letter_id}/approve")
 def approve_letter(letter_id: str, data: RevisionPayload):
+    """审批绑定当前版本和内容摘要，不自动覆盖后续修改。"""
     with SessionLocal() as db:
         letter = get_or_404(db, Letter, letter_id)
         ensure_revision(letter, data.expected_revision)
         if letter.status == "simulated_sent":
             return letter_dict(letter)
         result = db.execute(update(Letter).where(Letter.id == letter_id, Letter.revision == data.expected_revision, Letter.status.in_(["draft", "approved"]))
-                            .values(status="approved", approved_revision=letter.revision, approved_hash=hash_json({"content": letter.content, "evidence": letter.evidence_hash, "case_id": letter.case_id})))
+                            .values(status="approved", approved_revision=letter.revision, approved_hash=letter_content_hash(letter)))
         if result.rowcount != 1:
             raise HTTPException(409, "当前版本无法审核")
         get_or_404(db, RiskCase, letter.case_id).status = "approved"
@@ -433,12 +477,13 @@ def approve_letter(letter_id: str, data: RevisionPayload):
 
 @app.post("/api/letters/{letter_id}/simulate-send")
 def simulate_send(letter_id: str, data: RevisionPayload):
+    """只生成本地回执；同一版本重复调用返回相同回执，无外部发送。"""
     with SessionLocal() as db:
         letter = get_or_404(db, Letter, letter_id)
         ensure_revision(letter, data.expected_revision)
         if letter.status == "simulated_sent" and letter.receipt:
             return letter_dict(letter)
-        content_hash = hash_json({"content": letter.content, "evidence": letter.evidence_hash, "case_id": letter.case_id})
+        content_hash = letter_content_hash(letter)
         if letter.status != "approved" or letter.approved_revision != letter.revision or letter.approved_hash != content_hash:
             raise HTTPException(409, "须先审核通过当前函件版本")
         receipt = {"id": f"SIM-{letter.id}-{letter.revision}", "channel": "simulation", "status": "simulated_sent", "created_at": timestamp(now())}
@@ -477,7 +522,8 @@ def import_template():
                     headers={"Content-Disposition": 'attachment; filename="indicator-import-template.csv"'})
 
 
-def parse_file(content, filename):
+def parse_file(content: bytes, filename: str | None) -> tuple[list[str], list[list[Any]]]:
+    """CSV/XLSX统一转成表头和原始行；不猜百分比编码、不执行公式。"""
     suffix = Path(filename or "").suffix.lower()
     if suffix == ".csv":
         try:
@@ -531,7 +577,8 @@ def parse_file(content, filename):
     return headers, rows[1:]
 
 
-def optional_integer(value, label, row_number):
+def optional_integer(value: Any, label: str, row_number: int) -> int | None:
+    """导入排名和参评数量共用的整数解析，空值保持为空。"""
     if value is None or not str(value).strip():
         return None
     try:
@@ -545,6 +592,7 @@ def optional_integer(value, label, row_number):
 
 @app.post("/api/import")
 async def import_data(file: UploadFile = File(...), source_kind: str = Form("file")):
+    """文件与数据库导入共用此边界；全部行校验后才创建快照。"""
     if source_kind not in {"file", "database"}:
         raise HTTPException(422, "未知的数据来源类型")
     content = await file.read(5 * 1024 * 1024 + 1)

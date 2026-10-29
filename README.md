@@ -132,6 +132,8 @@ $env:RISK_SOURCE_DATABASE_URL = 'sqlite:///C:/path/to/test_source.db'
 | backend/seed.py | 合成机构、指标与3个数据快照，方便重复演示 |
 | backend/app.py | API、规则执行、导入校验、函件状态处理 |
 | backend/analysis.py | Python 与 Pi Agent 的 JSON 进程调用边界、结果校验与超时处理 |
+| agent/src/contracts.ts | Agent 请求、结果、证据和运行轨迹的 TypeScript 类型契约 |
+| frontend/src/api.ts | 页面共用的 JSON 请求、文件上传及接口错误处理 |
 | agent/ | TypeScript Pi Agent、业务工具、模型接入、离线演示与契约测试；dist 为编译产物 |
 | frontend/ | Vue3/TypeScript页面源码与已编译dist |
 | scripts/import_from_database.py | 固定标准视图的只读数据导入 |
@@ -145,6 +147,8 @@ $env:RISK_SOURCE_DATABASE_URL = 'sqlite:///C:/path/to/test_source.db'
 .\.venv\Scripts\python.exe -m pytest tests -q
 npm.cmd --prefix agent test
 ```
+
+复用时，Python 调用 `provider.select(topic, indicators, mandatory_ids)` 或 `provider.explain_batch(cases)`；TypeScript 调用 `runRequest(request, options?)`，输入输出类型见 `contracts.ts`。CLI 入口 `runner.ts` 只负责 JSON 读写，业务代码无需依赖命令行。前端的 `api<T>()` 与 `send<T>()` 集中处理 HTTP，页面只维护业务状态。
 
 编辑 Agent 时，在项目根目录运行 `npm.cmd --prefix agent run build`。编辑前端时，在 `frontend/` 运行 `npm ci --ignore-scripts`、`npm run build`；Python 服务提供编译后的页面，不使用外部 CDN。
 

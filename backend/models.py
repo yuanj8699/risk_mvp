@@ -1,8 +1,11 @@
-"""Persistent business state. SQLite for the local demo, PostgreSQL configurable."""
+"""业务持久化模型：目录 → 数据快照 → 风险事项 → 函件修订。
+
+本地默认SQLite，也可配置PostgreSQL；JSON字段更新须赋新对象，不能只原地修改。
+"""
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -25,11 +28,11 @@ if DATABASE_URL.startswith("sqlite"):
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 
-def now():
+def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def uid():
+def uid() -> str:
     return uuid4().hex
 
 
@@ -38,10 +41,9 @@ class Base(DeclarativeBase):
 
 
 class ExactDecimal(TypeDecorator):
-    """Keep decimal digits intact on SQLite; use native NUMERIC on PostgreSQL.
+    """SQLite用文本保存精确十进制，PostgreSQL使用NUMERIC。
 
-    SQLite's NUMERIC affinity may convert a bound value to a binary float.
-    Text storage avoids that conversion; calculations still use Decimal.
+    避免SQLite的NUMERIC affinity把金额转成浮点数；读取后统一返回Decimal。
     """
 
     impl = String(64)
@@ -64,6 +66,7 @@ class ExactDecimal(TypeDecorator):
 
 
 class Organization(Base):
+    """机构树：parent_id表达上下级，level=3为当前监测行社。"""
     __tablename__ = "organizations"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     code: Mapped[str] = mapped_column(String(64), unique=True)
@@ -74,6 +77,7 @@ class Organization(Base):
 
 
 class Indicator(Base):
+    """指标定义及单位；与具体机构、期次的指标值分开存储。"""
     __tablename__ = "indicators"
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
@@ -83,10 +87,11 @@ class Indicator(Base):
 
 
 class Snapshot(Base):
+    """不可混用的数据批次；各指标可保留自己的实际数据日期。"""
     __tablename__ = "snapshots"
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
     name: Mapped[str] = mapped_column(String(200))
-    data_date: Mapped[object] = mapped_column(Date)
+    data_date: Mapped[date] = mapped_column(Date)
     source: Mapped[str] = mapped_column(String(100))
     is_demo: Mapped[bool] = mapped_column(Boolean, default=True)
     row_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -95,14 +100,15 @@ class Snapshot(Base):
 
 
 class Observation(Base):
+    """每批次、机构、指标一条事实；None是缺数，0是有效零值。"""
     __tablename__ = "observations"
     __table_args__ = (UniqueConstraint("snapshot_id", "org_id", "indicator_id", name="uq_snapshot_observation"),)
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
     snapshot_id: Mapped[str] = mapped_column(ForeignKey("snapshots.id"), index=True)
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
     indicator_id: Mapped[str] = mapped_column(ForeignKey("indicators.id"), index=True)
-    data_date: Mapped[object] = mapped_column(Date)
-    value: Mapped[object | None] = mapped_column(ExactDecimal(), nullable=True)
+    data_date: Mapped[date] = mapped_column(Date)
+    value: Mapped[Decimal | None] = mapped_column(ExactDecimal(), nullable=True)
     unit: Mapped[str] = mapped_column(String(30))
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     population: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -111,6 +117,7 @@ class Observation(Base):
 
 
 class Rule(Base):
+    """可配置规则及当前版本；每次运行另外保存其冻结副本。"""
     __tablename__ = "rules"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
@@ -123,6 +130,7 @@ class Rule(Base):
 
 
 class AnalysisRun(Base):
+    """一次监测的输入身份、固定规则、检查明细与汇总。"""
     __tablename__ = "analysis_runs"
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
     run_key: Mapped[str] = mapped_column(String(64), unique=True)
@@ -136,6 +144,7 @@ class AnalysisRun(Base):
 
 
 class RiskCase(Base):
+    """同次运行按行社合并的风险事项，保存当时证据与分析。"""
     __tablename__ = "risk_cases"
     __table_args__ = (UniqueConstraint("run_id", "org_id", name="uq_case_org_run"),)
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
@@ -143,7 +152,7 @@ class RiskCase(Base):
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"))
     org_name: Mapped[str] = mapped_column(String(200))
     region_name: Mapped[str] = mapped_column(String(200))
-    data_date: Mapped[object] = mapped_column(Date)
+    data_date: Mapped[date] = mapped_column(Date)
     risk_types: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(30), default="open")
     headline: Mapped[str] = mapped_column(Text)
@@ -152,6 +161,7 @@ class RiskCase(Base):
 
 
 class Letter(Base):
+    """函件当前版本；审批同时绑定revision与正文/证据摘要。"""
     __tablename__ = "letters"
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
     case_id: Mapped[str] = mapped_column(ForeignKey("risk_cases.id"), unique=True)
@@ -166,6 +176,7 @@ class Letter(Base):
 
 
 class LetterHistory(Base):
+    """每次正文修订的不可覆盖记录，供回看已审核或已模拟下发版本。"""
     __tablename__ = "letter_history"
     __table_args__ = (UniqueConstraint("letter_id", "revision", name="uq_letter_revision"),)
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
@@ -177,6 +188,7 @@ class LetterHistory(Base):
 
 
 class AuditLog(Base):
+    """与业务事务一起保存的操作记录，不存模型密钥或认证信息。"""
     __tablename__ = "audit_log"
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
     action: Mapped[str] = mapped_column(String(100))

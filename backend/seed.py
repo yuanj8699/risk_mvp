@@ -1,8 +1,9 @@
-"""Deterministic synthetic fixtures. Names are fictional; ranks are source fixtures."""
+"""可重复的合成样例：机构和数值均为虚构，排名是输入值而非监测计算结果。"""
 from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .models import Organization, Indicator, Snapshot, Observation, Rule
 
@@ -18,7 +19,8 @@ METRICS = [
 ]
 
 
-def seed_database(db):
+def seed_database(db: Session) -> None:
+    """仅空库初始化；机构按父级先落库，重启时保留已有数据及用户配置。"""
     if db.scalar(select(Organization.id).limit(1)):
         return
     db.add(Organization(id="HQ", code="HQ", name="测试总行", level=1, parent_id=None, region_id=None))
@@ -46,6 +48,7 @@ def seed_database(db):
                 params={"threshold": None, "op": ">="}, version=1, description="未提供行内占比阈值；保持待配置，不产生默认异常判断。"))
     db.add(Rule(id="exists_funds_npl_balance", name="资金业务不良存在提醒", kind="exists", indicator_id="funds_npl_balance", enabled=True,
                 params={"op": "!=0"}, version=1, description="有效值非零即提醒；缺失不等于零，排名不参与筛选。"))
+    # 固定期次和少量缺数/负增量样例，方便前后版本按同一输入对照。
     days = [date(2026, 8, 31), date(2026, 9, 30), date(2026, 10, 28)]
     for period, day in enumerate(days):
         snap = Snapshot(id=f"demo-{day.isoformat()}", name=f"合成测试数据 {day.isoformat()}", data_date=day, source="synthetic", is_demo=True, row_count=82 * len(METRICS), status="ready")

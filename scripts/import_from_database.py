@@ -1,8 +1,7 @@
-"""Read a canonical database view and submit it through the normal import API.
+"""从标准只读视图导出CSV，再调用应用的统一导入接口。
 
-Credentials stay in environment variables. No arbitrary SQL or write operation is
-accepted. The source account must already be read-only. XiaoQ/DataWorks-specific
-network and authentication are deliberately not guessed.
+来源凭据只通过环境变量提供；不接受任意SQL，源账号本身也须具有只读权限。
+不推断DataWorks的实际引擎或小Q协议。
 """
 from __future__ import annotations
 
@@ -20,6 +19,7 @@ COLUMNS = ["org_code", "indicator_id", "data_date", "value", "unit", "rank", "po
 
 
 def export_view(source_url: str, view_name: str, data_date: str) -> bytes:
+    """返回带BOM的标准CSV字节；本函数只取数，不调用API、不写来源库。"""
     date.fromisoformat(data_date)
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?", view_name):
         raise ValueError("来源必须是固定的表/视图名，可包含一层schema，不能输入SQL。")
@@ -33,6 +33,7 @@ def export_view(source_url: str, view_name: str, data_date: str) -> bytes:
                 connection.execute(text("PRAGMA query_only = ON"))
             else:
                 raise ValueError("测试版数据库适配器只实现SQLite/PostgreSQL；其他DataWorks引擎需实现独立适配器。")
+            # 表名不能作为SQL值绑定：先限定标识符并逐段引用，日期仍用参数绑定。
             columns_sql = ", ".join('"' + col + '"' for col in COLUMNS)
             view_sql = ".".join('"' + part + '"' for part in view_name.split("."))
             query = text(f"SELECT {columns_sql} FROM {view_sql} WHERE data_date = :data_date LIMIT 10001")
@@ -52,6 +53,7 @@ def export_view(source_url: str, view_name: str, data_date: str) -> bytes:
 
 
 def main() -> None:
+    """命令行入口只负责配置和提交；业务校验复用/api/import。"""
     parser = argparse.ArgumentParser(description="通过标准视图导入测试数据")
     parser.add_argument("--date", required=True, help="YYYY-MM-DD")
     parser.add_argument("--view", default="risk_indicator_export")
@@ -70,7 +72,7 @@ def main() -> None:
         )
         response.raise_for_status()
     except (ValueError, httpx.HTTPError) as exc:
-        # Do not print SQLAlchemy connection exceptions containing source secrets.
+        # 不输出可能带来源凭据的异常正文，只提示类别和核查位置。
         raise SystemExit(f"导入未完成：{type(exc).__name__}。请核对日期、标准视图和应用日志。") from None
     except Exception as exc:
         raise SystemExit(f"来源读取未完成：{type(exc).__name__}。请检查只读连接与标准视图。") from None
