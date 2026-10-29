@@ -7,5 +7,6 @@ __pycache__/
 *.db-wal
 data/
 frontend/node_modules/
+agent/node_modules/
 .env
 .openai/

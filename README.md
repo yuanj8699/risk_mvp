@@ -2,11 +2,11 @@
 
 本项目将“数据导入—指标筛选—规则检测—证据查看—函件草稿—审核—模拟下发”连成一条可运行流程。机构范围按本次需求设置为11个地区、82家行社，并保留第4、5级机构。
 
-**这是本地测试工程。内置机构名称、地区归属、指标数值均为合成数据。分析目前使用目录匹配与模板，尚未连接小Q或真实大模型；模拟下发只生成本地回执。**
+**这是本地测试工程。内置机构名称、地区归属、指标数值均为合成数据。Agent 部分由 Pi 框架执行，默认离线演示：使用本地固定逻辑模拟模型响应，运行真实的 Pi 工具调用流程，不请求外部模型。小Q尚未接入；模拟下发只生成本地回执。**
 
 ## 1. 运行
 
-需要 Python 3.11 或更高版本，推荐 Python 3.12。首次安装依赖需要访问可用的 Python 包源。页面已编译并包含在压缩包内，运行页面不需要安装 Node.js。
+需要 Python 3.11 或更高版本，以及 Node.js 22.19 或更高版本。首次安装需要访问 Python 包源和 npm。前端页面及 Agent 的 JavaScript 已编译保留；日常运行不需要启动前端开发服务，但需要 Node.js 执行 Pi Agent。
 
 ### Windows
 
@@ -15,6 +15,8 @@
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+npm.cmd --prefix agent ci --ignore-scripts
+npm.cmd --prefix agent run build
 .\.venv\Scripts\python.exe run.py
 ```
 
@@ -25,10 +27,12 @@ py -3 -m venv .venv
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
+npm --prefix agent ci --ignore-scripts
+npm --prefix agent run build
 .venv/bin/python run.py
 ```
 
-默认使用项目 `data/` 目录下的 SQLite 数据库，首次启动自动创建表和合成数据。关闭服务后记录仍会保留。重新启动不会自动清空数据。
+默认使用项目 `data/` 目录下的 SQLite 数据库，首次启动自动创建表和合成数据。关闭服务后记录仍会保留。重新启动不会自动清空数据。Windows 启动脚本会检查 Python 与 Node 环境，并安装缺失的项目依赖。
 
 ## 2. 先体验一条完整流程
 
@@ -53,7 +57,8 @@ python3 -m venv .venv
 | 存在提醒 | 资金业务不良余额有效且非零即提醒；缺失与零分开 |
 | 规则组合 | 测试版每条规则独立触发，同一行社同次运行合并为一项事件；正式是否有AND组合待业务确认 |
 | 数据来源 | 页面支持CSV/XLSX导入；脚本支持SQLite/PostgreSQL标准视图只读导入 |
-| 小Q | `AnalysisProvider` 接口预留，实际协议、认证和请求/响应字段待提供 |
+| Agent | Pi Agent 负责指标选择与证据分析；默认离线演示，可配置真实模型模式 |
+| 小Q | 尚未接入，实际协议、认证和请求/响应字段待提供，不假设兼容现有模型协议 |
 | 函件 | 当前为通用测试模板，正式模板尚未提供 |
 | 下发 | 页面只允许本地模拟；内部风险管理系统的真实协议未知 |
 
@@ -126,7 +131,8 @@ $env:RISK_SOURCE_DATABASE_URL = 'sqlite:///C:/path/to/test_source.db'
 | backend/models.py | 机构、指标、快照、事实、规则、任务、事件、函件、修订与审计模型 |
 | backend/seed.py | 合成机构、指标与3个数据快照，方便重复演示 |
 | backend/app.py | API、规则执行、导入校验、函件状态处理 |
-| backend/analysis.py | 目录选择与模板分析，以及模型适配接口 |
+| backend/analysis.py | Python 与 Pi Agent 的 JSON 进程调用边界、结果校验与超时处理 |
+| agent/ | TypeScript Pi Agent、业务工具、模型接入、离线演示与契约测试；dist 为编译产物 |
 | frontend/ | Vue3/TypeScript页面源码与已编译dist |
 | scripts/import_from_database.py | 固定标准视图的只读数据导入 |
 | tests/ | 规则边界、数据校验、函件版本与模拟下发的回归验证 |
@@ -137,14 +143,37 @@ $env:RISK_SOURCE_DATABASE_URL = 'sqlite:///C:/path/to/test_source.db'
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest tests -q
+npm.cmd --prefix agent test
 ```
 
-编辑前端时，在 `frontend/` 运行 `npm ci`、`npm run build`；Python服务提供编译后的资源。日常运行不需要Node，也不使用外部CDN。
+编辑 Agent 时，在项目根目录运行 `npm.cmd --prefix agent run build`。编辑前端时，在 `frontend/` 运行 `npm ci --ignore-scripts`、`npm run build`；Python 服务提供编译后的页面，不使用外部 CDN。
+
+### Pi Agent 的运行模式
+
+使用的是 GitHub 上原 `badlogic/pi-mono` 项目，现已迁移到 [earendil-works/pi](https://github.com/earendil-works/pi)。本版锁定 `@earendil-works/pi-agent-core` 与 `@earendil-works/pi-ai` 1.4.0。
+
+默认 `RISK_PI_MODE=demo`。Pi Agent 执行目录查询、证据读取和结构化结果提交，模型响应由本地确定性逻辑生成。页面显示“Pi Agent · 离线演示”，此模式无需 API 密钥，也不会发送指标数据到外部服务。
+
+真实模型模式通过以下环境变量配置，然后重新启动服务：
+
+```powershell
+$env:RISK_PI_MODE = 'model'
+$env:RISK_PI_PROVIDER = '<Pi 内置目录中的供应商 ID>'
+$env:RISK_PI_MODEL = '<模型 ID>'
+$env:RISK_PI_API_KEY = '<该服务的 API 密钥>'
+.\.venv\Scripts\python.exe run.py
+```
+
+`RISK_PI_PROVIDER` 与 `RISK_PI_MODEL` 的组合必须存在于 Pi 内置模型目录。可选 `RISK_PI_BASE_URL` 用于替换为采用同一协议的 HTTP(S) 服务地址，不能在 URL 内嵌用户名或密码；它不能把任意小Q接口自动转换成兼容协议。
+
+仅对获准的模型服务和数据启用 `model` 模式：该模式会将本次指标目录与风险证据发送给所配置的模型。密钥通过环境变量提供，不写进代码或 Git。缺少配置、模型失败、结果不合格或执行超时会返回明确错误，本次运行整体回滚；修复后可以重新运行，不会悄悄改用演示结果。真实模型接口尚未联调，小Q需确认协议后接入。
+
+Python 保留取数、规则计算、数据库写入、函件审核和模拟下发。每次监测分别调用一次 Pi 指标选择和一次批量证据分析；Agent 不能修改排名、规则阈值或审批状态。
 
 ## 7. 尚未实现的部分
 
 - 未连接真实DataWorks数据源、小Q模型接口或内部风险管理系统。
-- 当前主题选择是可解释的预置匹配，不是大模型自主推理；真实模型需要实现 `AnalysisProvider`。
+- Pi 工具执行与离线演示已实现；真实模型模式已提供配置入口，但尚未完成真实服务联调。离线演示不代表模型推理效果。
 - 监测为本地小批次同步执行，已有运行记录与幂等处理；尚未实现持久worker、跨进程任务租约和自动调度。
 - 当前没有生产登录、机构数据权限或正式授权策略。默认仅绑定127.0.0.1，适用于本地测试。
 - 模拟下发验证版本与状态，不等于实现真实渠道的outbox、重试和送达确认。
@@ -156,7 +185,7 @@ $env:RISK_SOURCE_DATABASE_URL = 'sqlite:///C:/path/to/test_source.db'
 
 先读 `models.py`，理解为什么指标定义、指标事实、快照和函件修订分表；再读 `evaluate()`，把三类规则与NULL/0状态对应起来；最后读函件编辑/审批/模拟发送API，理解事务、乐观并发与幂等。
 
-完成这条业务链路后，再增加真实模型适配和后台worker，会比同时学习多个框架更容易定位问题。
+随后阅读 `backend/analysis.py` 与 `agent/`，理解 Python 如何把固定证据交给 Pi 工具循环，以及如何校验结果。真实模型联调与后台 worker 可在这条业务链路上逐项补充。
 
 资料：
 

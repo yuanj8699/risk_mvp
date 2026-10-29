@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from .analysis import provider
+from .analysis import AnalysisError, provider
 from .models import (ROOT, Base, engine, SessionLocal, Organization, Indicator, Snapshot, Observation,
                      Rule, AnalysisRun, RiskCase, Letter, LetterHistory, AuditLog, uid, now)
 from .seed import seed_database
@@ -109,6 +109,11 @@ async def lifespan(app):
 app = FastAPI(title="行社风险提示测试版", version="0.1.0", lifespan=lifespan)
 
 
+@app.exception_handler(AnalysisError)
+async def analysis_error_handler(request, exc):
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
 class Payload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -145,7 +150,7 @@ def bootstrap():
         snaps = db.scalars(select(Snapshot).order_by(Snapshot.created_at.desc(), Snapshot.data_date.desc())).all()
         latest = db.scalar(select(AnalysisRun).order_by(AnalysisRun.created_at.desc()).limit(1))
         return {
-            "meta": {"app_name": "行社风险提示", "version": "0.1.0", "demo": True, "agent_mode": "template",
+            "meta": {"app_name": "行社风险提示", "version": "0.1.0", "demo": True, "agent_mode": provider.mode,
                      "data_date": max((s.data_date for s in snaps), default=date.today()).isoformat(),
                      "rank_note": "默认排名≥72；82家全部参评且无并列时为第72—82名，共11家；并列不截断。"},
             "summary": {"region_count": sum(o.level == 2 for o in orgs), "org_count": sum(o.level == 3 for o in orgs),
@@ -254,7 +259,7 @@ def create_run(data: RunPayload):
         frozen_rules = [rule_dict(r) for r in all_rules]
         normalized_topic = " ".join(data.risk_topic.split())
         key = hash_json({"snapshot": snapshot.id, "rules": frozen_rules, "risk_topic": normalized_topic,
-                         "provider_mode": "template", "provider_version": "0.1.0"})
+                         "agent": provider.cache_identity})
         existing = db.scalar(select(AnalysisRun).where(AnalysisRun.run_key == key))
         if existing:
             return run_dict(existing)
@@ -264,7 +269,7 @@ def create_run(data: RunPayload):
         observations = {(o.org_id, o.indicator_id): o for o in db.scalars(select(Observation).where(Observation.snapshot_id == snapshot.id))}
         selection = provider.select(normalized_topic, [metric_dict(m) for m in metrics.values()], [r.indicator_id for r in active_rules])
         counts = {k: 0 for k in ("evaluated", "triggered", "normal", "insufficient", "not_applicable", "unconfigured", "case_count")}
-        run = AnalysisRun(run_key=key, snapshot_id=snapshot.id, status="running", summary=counts, selection=selection, rule_snapshot=frozen_rules)
+        run = AnalysisRun(run_key=key, snapshot_id=snapshot.id, status="running", summary=dict(counts), selection=selection, rule_snapshot=frozen_rules)
         db.add(run)
         try:
             db.flush()
@@ -275,6 +280,7 @@ def create_run(data: RunPayload):
                 return run_dict(winner)
             raise HTTPException(409, "同批次正在执行，请稍后重试")
         checks = []
+        pending_cases = []
         for org in orgs:
             evidence = []
             for rule in active_rules:
@@ -291,9 +297,19 @@ def create_run(data: RunPayload):
             supporting = []
             for metric_id in selection["indicator_ids"]:
                 obs = observations.get((org.id, metric_id))
-                if obs and obs.value is not None:
+                metric = metrics[metric_id]
+                allowed_lag = 120 if metric.frequency == "季" else 7
+                if (obs and obs.value is not None and obs.quality_status == "valid"
+                        and obs.unit == metric.unit and 0 <= (snapshot.data_date - obs.data_date).days <= allowed_lag):
                     supporting.append({"indicator_id": metric_id, "value": number(obs.value), "value_display": display(obs.value, obs.unit), "data_date": obs.data_date.isoformat()})
-            analysis = provider.explain(evidence, supporting)
+            pending_cases.append({"case_key": org.id, "evidence": evidence, "supporting": supporting})
+        # One Node process per batch avoids repeatedly loading Pi for every society.
+        analyses = provider.explain_batch(pending_cases)
+        org_by_id = {org.id: org for org in orgs}
+        for item in pending_cases:
+            org = org_by_id[item["case_key"]]
+            evidence = item["evidence"]
+            analysis = analyses[item["case_key"]]
             if not snapshot.is_demo:
                 analysis["limitations"] = [x for x in analysis["limitations"] if "内置数值" not in x]
                 analysis["limitations"].insert(0, "本批次为用户导入数据，仍仅用于本地测试，未核验生产口径。")

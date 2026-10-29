@@ -30,6 +30,8 @@ COLUMNS = [
 def api():
     with tempfile.TemporaryDirectory(prefix="risk-agent-tests-") as directory:
         previous = os.environ.get("RISK_DATABASE_URL")
+        previous_mode = os.environ.get("RISK_PI_MODE")
+        os.environ["RISK_PI_MODE"] = "demo"
         os.environ["RISK_DATABASE_URL"] = "sqlite:///" + str(Path(directory) / "test.db")
         os.environ["RISK_DEMO"] = "1"
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -69,10 +71,15 @@ def api():
             ticker.cancel()
             loop.run_until_complete(asyncio.gather(ticker, return_exceptions=True))
             loop.close()
+            module.engine.dispose()
         if previous is None:
             os.environ.pop("RISK_DATABASE_URL", None)
         else:
             os.environ["RISK_DATABASE_URL"] = previous
+        if previous_mode is None:
+            os.environ.pop("RISK_PI_MODE", None)
+        else:
+            os.environ["RISK_PI_MODE"] = previous_mode
 
 
 def good(response):
@@ -154,6 +161,7 @@ def cases_for(api, run_id):
 
 def test_hierarchy_and_test_only_delivery(api):
     boot = good(api.get("/api/bootstrap"))
+    assert boot["meta"]["agent_mode"] == "pi-demo"
     orgs = boot["organizations"]
     assert boot["meta"]["demo"] is True
     assert len([org for org in orgs if org["level"] == 2]) == 11
@@ -375,3 +383,65 @@ def test_letter_revision_approval_and_simulated_delivery(api):
     assert download.status_code == 200
     assert "请核对上述测试数据。" in download.text
 
+
+
+def test_pi_runtime_reports_demo_mode_and_preserves_evidence(api):
+    org = societies(api)[0]
+    snapshot = good(import_csv(api, [row(org, rank="82")]))
+    with only_rule(api, rule_for(api, "rank", "npl_ratio")):
+        result = run(api, snapshot["snapshot_id"])
+        assert result["selection"]["mode"] == "pi-demo"
+        assert result["selection"]["runtime"]["framework"] == "pi-agent-core"
+        case = cases_for(api, result["id"])[0]
+        detail = good(api.get(f"/api/cases/{case['id']}"))
+        assert detail["analysis"]["mode"] == "pi-demo"
+        assert detail["analysis"]["trace"]
+        assert detail["evidence"][0]["value_display"] in "\n".join(detail["analysis"]["facts"])
+        stored = next(item for item in good(api.get("/api/runs")) if item["id"] == result["id"])
+        assert stored["summary"] == result["summary"]
+        assert stored["summary"]["case_count"] == 1
+        assert stored["summary"]["triggered"] == 1
+
+
+def test_unconfigured_pi_model_fails_without_creating_a_run(api, monkeypatch):
+    before = good(api.get("/api/runs"))
+    snapshot = good(api.get("/api/bootstrap"))["snapshots"][0]
+    monkeypatch.setenv("RISK_PI_MODE", "model")
+    for name in ("RISK_PI_PROVIDER", "RISK_PI_MODEL", "RISK_PI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    response = api.post("/api/runs", json={"snapshot_id": snapshot["id"], "risk_topic": "配置错误验证"})
+    assert response.status_code == 502
+    assert "Pi Agent" in response.json()["detail"]
+    assert good(api.get("/api/runs")) == before
+
+
+def test_agent_batch_failure_rolls_back_and_can_be_retried(api, monkeypatch):
+    from backend.analysis import AnalysisError, provider
+
+    org = societies(api)[0]
+    snapshot = good(import_csv(api, [row(org, rank="82")]))
+    with only_rule(api, rule_for(api, "rank", "npl_ratio")):
+        before_runs = good(api.get("/api/runs"))
+        before_cases = good(api.get("/api/cases"))
+
+        def unavailable(cases):
+            raise AnalysisError("测试模拟：Pi 分析服务不可用")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(provider, "explain_batch", unavailable)
+            response = api.post("/api/runs", json={"snapshot_id": snapshot["snapshot_id"], "risk_topic": "信用风险"})
+        assert response.status_code == 502
+        assert good(api.get("/api/runs")) == before_runs
+        assert good(api.get("/api/cases")) == before_cases
+        assert run(api, snapshot["snapshot_id"])["summary"]["case_count"] == 1
+
+
+def test_stale_supporting_values_do_not_enter_pi_analysis(api):
+    org = societies(api)[0]
+    snapshot = good(import_csv(api, [row(org, rank="82"),
+                                   row(org, "funds_npl_change", "-30000", data_date="2025-01-01")]))
+    with only_rule(api, rule_for(api, "rank", "npl_ratio")):
+        result = run(api, snapshot["snapshot_id"])
+        case = cases_for(api, result["id"])[0]
+        detail = good(api.get(f"/api/cases/{case['id']}"))
+        assert "资金业务不良余额比年初增量" not in "\n".join(detail["analysis"]["facts"])

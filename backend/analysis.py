@@ -1,49 +1,93 @@
-"""Bounded, explicit offline analysis and the model integration boundary.
+"""Python boundary for the TypeScript Pi Agent runtime.
 
-This version never claims a real LLM connection. A XiaoQ provider can implement
-AnalysisProvider after its actual request/response protocol is confirmed.
+Only the frozen indicator catalogue and case evidence cross this boundary.
+Rules, database writes, approval and delivery stay in Python.
 """
-from typing import Protocol
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
 
 
-class AnalysisProvider(Protocol):
-    def select(self, topic: str, indicators: list[dict], mandatory_ids: list[str]) -> dict: ...
-    def explain(self, evidence: list[dict], supporting: list[dict]) -> dict: ...
+ROOT = Path(__file__).resolve().parents[1]
 
 
-class TemplateAnalysisProvider:
-    mode = "template"
+class AnalysisError(RuntimeError):
+    """An explicit agent configuration, execution or protocol failure."""
+
+
+class PiAnalysisProvider:
+    version = "pi-1.4.0-risk-1"
+
+    @property
+    def mode(self):
+        return "pi-" + os.getenv("RISK_PI_MODE", "demo")
+
+    @property
+    def cache_identity(self):
+        return {
+            "mode": self.mode,
+            "version": self.version,
+            "provider": os.getenv("RISK_PI_PROVIDER", ""),
+            "model": os.getenv("RISK_PI_MODEL", ""),
+            "base_url": os.getenv("RISK_PI_BASE_URL", ""),
+        }
+
+    def _request(self, payload):
+        node = shutil.which("node")
+        runner = ROOT / "agent" / "dist" / "runner.js"
+        if not node or not runner.is_file():
+            raise AnalysisError("Pi Agent 未安装：需要 Node.js 22.19+，请在 agent 目录执行 npm ci --ignore-scripts 和 npm run build。")
+        try:
+            result = subprocess.run(
+                [node, str(runner)],
+                input=json.dumps(payload, ensure_ascii=False),
+                text=True, encoding="utf-8", capture_output=True,
+                cwd=ROOT / "agent", timeout=180,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AnalysisError("Pi Agent 超过本批次180秒时限，执行已终止；本次运行未保存，请检查模型服务后重试。") from exc
+        except OSError as exc:
+            raise AnalysisError(f"Pi Agent 进程无法启动：{exc.strerror}") from exc
+        try:
+            response = json.loads(result.stdout)
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise AnalysisError(f"Pi Agent 未返回有效结果（退出码 {result.returncode}），请检查 agent 依赖及配置。") from exc
+        if result.returncode or not isinstance(response, dict) or "error" in response:
+            error = response.get("error", "执行失败") if isinstance(response, dict) else "返回格式错误"
+            if isinstance(error, dict):
+                error = error.get("message", "执行失败")
+            raise AnalysisError(f"Pi Agent：{error}")
+        return response
 
     def select(self, topic, indicators, mandatory_ids):
-        selected = set(mandatory_ids)
-        reasons = ["所有已启用且适用的规则均执行；主题筛选不删除必查指标。"]
-        if any(word in topic for word in ("存款", "扩张", "流动")):
-            selected.update(("deposit_growth", "pure_deposit_growth"))
-            reasons.append("主题包含存款相关词，补充纯存款增幅作为辅助证据。")
-        if any(word in topic for word in ("资金", "不良", "风险", "贷款", "信用")) or not topic:
-            selected.update(("npl_ratio", "overdue_ratio", "new_npl_ratio", "funds_npl_change", "funds_npl_ratio"))
-            reasons.append("按预置主题映射补充信用风险与资金业务指标。")
-        allowed = {x["id"] for x in indicators}
-        return {"mode": "template", "topic": topic, "indicator_ids": sorted(selected & allowed), "reasons": reasons,
-                "limitations": ["当前使用目录匹配和模板分析，尚未接入真实大模型。", "小Q接口协议待提供；该模式不会自动产生新的阈值。"]}
+        selection = self._request({"operation": "select", "topic": topic,
+                                   "indicators": indicators, "mandatory_ids": mandatory_ids})
+        allowed = {item["id"] for item in indicators}
+        selected = selection.get("indicator_ids")
+        if not isinstance(selected, list) or any(not isinstance(item, str) for item in selected):
+            raise AnalysisError("Pi Agent 指标选择结果格式错误。")
+        if not set(selected) <= allowed or not set(mandatory_ids) <= set(selected):
+            raise AnalysisError("Pi Agent 返回未知指标或遗漏必查指标，已拒绝本次结果。")
+        return selection
 
-    def explain(self, evidence, supporting):
-        facts = [f"{e['indicator_name']}为{e['value_display']}；{e['reason']}。" for e in evidence]
-        negative_change = next((x for x in supporting if x["indicator_id"] == "funds_npl_change" and x.get("value") is not None and float(x["value"]) < 0), None)
-        if negative_change:
-            facts.append(f"资金业务不良余额比年初增量为{negative_change['value_display']}，表示较年初减少；不能据此写成风险上升。")
-        kinds = {e["rule_kind"] for e in evidence}
-        checks = []
-        if "rank" in kinds:
-            checks.append("复核排名的参评范围、指标方向及源数据，与同口径历史值比较。")
-        if "ratio" in kinds:
-            checks.append("复核占比指标的分子、分母和阈值适用性，核查变动构成。")
-        if "exists" in kinds:
-            checks.append("核查资金业务不良余额的明细构成、处置进展及数据期次。")
-        return {"mode": "template", "facts": facts,
-                "hypotheses": ["仅凭汇总指标无法确认异常原因或责任；需结合行社明细和业务说明核查。"],
-                "checks": checks,
-                "limitations": ["内置数值与机构均为合成测试数据。", "使用通用测试函件模板，尚未替换行内正式模板。", "规则计算已执行；当前说明由模板生成，未调用小Q或其他大模型。"]}
+    def explain_batch(self, cases):
+        if not cases:
+            return {}
+        response = self._request({"operation": "explain_batch", "cases": cases})
+        analyses = response.get("analyses")
+        if not isinstance(analyses, dict) or set(analyses) != {case["case_key"] for case in cases}:
+            raise AnalysisError("Pi Agent 分析结果未覆盖本批次全部风险事项。")
+        for analysis in analyses.values():
+            if not isinstance(analysis, dict) or any(
+                not isinstance(analysis.get(field), list)
+                or any(not isinstance(item, str) for item in analysis[field])
+                for field in ("facts", "hypotheses", "checks", "limitations")
+            ):
+                raise AnalysisError("Pi Agent 分析结果格式错误。")
+        return analyses
 
 
-provider: AnalysisProvider = TemplateAnalysisProvider()
+provider = PiAnalysisProvider()
