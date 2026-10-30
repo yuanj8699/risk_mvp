@@ -1,4 +1,4 @@
-/** 只读业务MCP客户端：绑定任务/机构，转换查询错误，并管理stdio子进程生命周期。 */
+/** 任务MCP客户端：绑定业务范围、筛选工具、转换错误并管理stdio子进程；执行仅限隔离任务目录。 */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ErrorCode, McpError, type Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -7,20 +7,23 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import type { TaskContext } from "./contracts.js";
 
 export const BUSINESS_TOOLS = ["search_indicators", "query_metrics", "check_risks", "get_letter_template"] as const;
-export type BusinessToolName = typeof BUSINESS_TOOLS[number];
+export const EXPLORATION_TOOLS = ["search_indicators", "check_risks", "get_letter_template", "write_task_file", "read_task_file", "list_task_files", "execute_python"] as const;
+export const MCP_TOOL_NAMES = [...new Set([...BUSINESS_TOOLS, ...EXPLORATION_TOOLS])];
+export type BusinessToolName = typeof MCP_TOOL_NAMES[number];
 
 export class BusinessToolError extends Error {
   constructor(public code: string, message: string, public recoverable = false) { super(message); }
 }
 
-/** 每个行社创建独立stdio会话，范围由服务端环境绑定，模型没有进程/文件工具。 */
+/** 证据分析绑定单行社，代码探索绑定整批范围；模型始终没有宿主shell/任意文件能力。 */
 export class BusinessMcpClient {
   private readonly client = new Client({ name: "risk-pi-agent", version: "0.2.0" });
   private readonly transport: StdioClientTransport;
   private closing?: Promise<void>;
   private definitions: Tool[] = [];
 
-  constructor(env: NodeJS.ProcessEnv, context: TaskContext, orgId: string, private readonly deadline: number) {
+  constructor(env: NodeJS.ProcessEnv, context: TaskContext, orgId: string | undefined, private readonly deadline: number,
+    private readonly allowedTools: readonly BusinessToolName[] = BUSINESS_TOOLS) {
     if (!env.RISK_PYTHON_EXECUTABLE || !env.RISK_PROJECT_ROOT) {
       throw new BusinessToolError("CONFIG_ERROR", "MCP需要RISK_PYTHON_EXECUTABLE和RISK_PROJECT_ROOT");
     }
@@ -30,7 +33,9 @@ export class BusinessMcpClient {
       env: {
         PYTHONUTF8: "1", PYTHONUNBUFFERED: "1",
         ...(env.RISK_DATABASE_URL ? { RISK_DATABASE_URL: env.RISK_DATABASE_URL } : {}),
-        RISK_TASK_RUN_ID: context.run_id, RISK_TASK_ORG_ID: orgId,
+        ...Object.fromEntries(["RISK_SANDBOX_IMAGE", "RISK_TASK_WORKSPACE_DIR", "DOCKER_HOST", "DOCKER_CONTEXT"].filter(key => env[key]).map(key => [key, env[key]!])),
+        RISK_TASK_RUN_ID: context.run_id,
+        ...(orgId ? { RISK_TASK_ORG_ID: orgId } : {}),
       },
       stderr: "ignore",
     });
@@ -45,10 +50,10 @@ export class BusinessMcpClient {
     try {
       await this.client.connect(this.transport, this.options(signal));
       const listed = await this.client.listTools({}, this.options(signal));
-      if (BUSINESS_TOOLS.some(name => !listed.tools.some(tool => tool.name === name))) {
+      if (this.allowedTools.some(name => !listed.tools.some(tool => tool.name === name))) {
         throw new BusinessToolError("SOURCE_ERROR", "MCP业务工具不完整，请检查后端服务版本");
       }
-      this.definitions = listed.tools.filter(tool => BUSINESS_TOOLS.includes(tool.name as BusinessToolName));
+      this.definitions = listed.tools.filter(tool => this.allowedTools.includes(tool.name as BusinessToolName));
     } catch (error) {
       await this.close();
       if (error instanceof BusinessToolError) throw error;
@@ -86,8 +91,12 @@ export class BusinessMcpClient {
       if (result.isError || body.error) {
         const failure = body.error as { code?: string; message?: string } | undefined;
         const code = failure?.code ?? "SOURCE_ERROR";
-        const recoverable = ["INVALID_ARGUMENT", "UNKNOWN_INDICATOR", "SCOPE_VIOLATION", "VALIDATION_ERROR"].includes(code);
-        throw new BusinessToolError(code, recoverable ? (failure?.message ?? "请修正工具参数后再调用") : "MCP数据源不可用或查询失败", recoverable);
+        const recoverable = ["INVALID_ARGUMENT", "UNKNOWN_INDICATOR", "SCOPE_VIOLATION", "VALIDATION_ERROR",
+          "FILE_NOT_FOUND", "PATH_VIOLATION", "OUTPUT_LIMIT", "WORKSPACE_BUSY"].includes(code);
+        // WorkspaceError已由后端整理为安全说明；环境不可用仍终止任务，不能冒充数据查询失败。
+        const safeMessage = recoverable || ["SANDBOX_UNAVAILABLE", "SANDBOX_ACTIVE"].includes(code);
+        const message = safeMessage ? (failure?.message ?? "任务工具不可用，请检查运行条件或参数") : "MCP数据源不可用或查询失败";
+        throw new BusinessToolError(code, message, recoverable);
       }
       return body;
     } catch (error) {

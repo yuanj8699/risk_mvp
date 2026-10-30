@@ -1,4 +1,18 @@
-# Issue #1 实际验证
+# 实际验证记录
+
+## 隔离 Python 自主分析（2026-10-30）
+
+基线为PR #2的`4d8f55c`，本轮分支为`feat/isolated-python-analysis`。代码执行方案已接入，但Docker引擎启动失败，真实容器验收仍被环境阻塞。
+
+- 24期、82家行社、8指标共15744条合成原始观测；按实际季度期次去重后真实导出12054条Parquet记录。已核对Decimal字符串精度、行数、稳定原始记录ID、来源、任务范围与文件hash，以及同任务复用。
+- 伪造或跨任务证据引用、数据文件被改写、未完成任务拟函均被拒绝。原监测流程37项回归本轮全量通过；原Node契约12项通过。
+- 浏览器实际验证自主分析入口，以及Docker不可用时保存失败记录、自动打开失败详情、按原任务重试和显示具体环境错误。前端TypeScript、Vue模板编译及构建通过。
+- 默认模型仍是确定性响应替身。预设列名错误只是展示真实执行反馈和脚本修正的演示设计，不能作为真实模型自主分析质量的证据。
+- **尚未验证**：Docker镜像构建、容器内Parquet计算、报错后修正的完整端到端结果、网络/目录隔离、超时与取消清理的真实Docker检查。成功结果页面、结果下载和综述函生成的完整链路也依赖该验收。
+
+Docker恢复并构建镜像后，运行`python -m pytest tests/test_code_runner.py tests/test_code_workflow.py -q`完成相关验收。当前不把缺失环境导致的未执行或skip计为通过。
+
+## 上一阶段：Issue #1 业务 MCP
 
 日期：2026-10-30。基线：master@8589f6e；分支：feat/issue-1-business-mcp。
 环境：Windows、Python 3.14.4、Node 24.14.0、SQLite、Pi 1.4.0、FastMCP 4.1.4、MCP TypeScript SDK 1.32.2。

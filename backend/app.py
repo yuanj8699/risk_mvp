@@ -20,7 +20,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, update, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -105,6 +105,8 @@ async def lifespan(app):
 
 
 app = FastAPI(title="行社风险提示测试版", version="0.1.0", lifespan=lifespan)
+from .code_tasks import router as code_router
+app.include_router(code_router)
 
 
 @app.exception_handler(AnalysisError)
@@ -150,7 +152,7 @@ def bootstrap():
         indicators = db.scalars(select(Indicator).order_by(Indicator.id)).all()
         rules = db.scalars(select(Rule).order_by(Rule.id)).all()
         snaps = db.scalars(select(Snapshot).order_by(Snapshot.created_at.desc(), Snapshot.data_date.desc())).all()
-        latest = db.scalar(select(AnalysisRun).order_by(AnalysisRun.created_at.desc()).limit(1))
+        latest = db.scalar(select(AnalysisRun).where(or_(AnalysisRun.selection["kind"].as_string().is_(None), AnalysisRun.selection["kind"].as_string() != "code")).order_by(AnalysisRun.created_at.desc()).limit(1))
         return {
             "meta": {"app_name": "行社风险提示", "version": "0.1.0", "demo": True, "agent_mode": provider.mode,
                      "data_date": max((s.data_date for s in snaps), default=date.today()).isoformat(),
@@ -336,7 +338,7 @@ def create_run(data: RunPayload):
 @app.get("/api/runs")
 def list_runs():
     with SessionLocal() as db:
-        return [run_dict(r) for r in db.scalars(select(AnalysisRun).order_by(AnalysisRun.created_at.desc()))]
+        return [run_dict(r) for r in db.scalars(select(AnalysisRun).where(or_(AnalysisRun.selection["kind"].as_string().is_(None), AnalysisRun.selection["kind"].as_string() != "code")).order_by(AnalysisRun.created_at.desc()))]
 
 
 @app.get("/api/runs/{run_id}/checks")

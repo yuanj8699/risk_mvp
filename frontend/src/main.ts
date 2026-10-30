@@ -1,5 +1,6 @@
 import { createApp, computed, onMounted, ref } from 'vue';
 import { api, send } from './api';
+import CodeExploration from './code-exploration';
 import './styles.css';
 
 // 类型对应后端 JSON 契约。金额/比率保留服务端字符串，页面不重新计算规则。
@@ -43,6 +44,7 @@ interface RiskCase {
 interface Bootstrap { meta: { app_name: string; version: string; demo: boolean; agent_mode: string; data_date: string; rank_note: string }; summary: { region_count: number; org_count: number; indicator_count: number; enabled_rule_count: number; case_count: number; letter_count: number }; organizations: Organization[]; indicators: Indicator[]; rules: Rule[]; snapshots: Snapshot[]; latest_run: Run | null }
 
 createApp({
+  components: { CodeExploration },
   setup() {
     // boot 保存目录和概览；当前查看的运行与表单选择分开，切换快照不会改写历史结果。
     const boot = ref<Bootstrap | null>(null);
@@ -74,6 +76,7 @@ createApp({
     const indicatorQuery = ref('');
     const nav = [
       { id: 'monitor', title: '监测工作台', subtitle: '风险发现与提示函', symbol: '◫' },
+      { id: 'explore', title: '自主分析', subtitle: '隔离代码与证据', symbol: '⌁' },
       { id: 'rules', title: '指标与规则', subtitle: '口径和触发条件', symbol: '≡' },
       { id: 'orgs', title: '机构目录', subtitle: '五级机构结构', symbol: '⌘' },
       { id: 'data', title: '数据管理', subtitle: '导入与快照', symbol: '▤' },
@@ -81,6 +84,7 @@ createApp({
     ];
     const titles: Record<string, { title: string; subtitle: string }> = {
       monitor: { title: '行社风险监测', subtitle: '从指标异常到风险提示，每一项结论都有据可查。' },
+      explore: { title: '自主代码分析', subtitle: '让 Pi 编写并执行分析代码，保留计算过程与来源证据。' },
       rules: { title: '指标与监测规则', subtitle: '把业务口径配置清楚，再运行一致、可追溯的检查。' },
       orgs: { title: '机构目录', subtitle: '本期覆盖行社，机构结构预留至第五级。' },
       data: { title: '数据管理', subtitle: '导入数据后形成独立快照，已运行的证据保持不变。' },
@@ -351,6 +355,8 @@ createApp({
             <div v-if="currentRun" class="bottom-grid"><section class="panel coverage-panel"><div class="panel-title"><h2>检查覆盖</h2><span class="subtle">本次运行</span></div><div class="coverage-bar"><span class="normal" :style="{width:coverageWidth('normal')}"></span><span class="triggered" :style="{width:coverageWidth('triggered')}"></span><span class="insufficient" :style="{width:coverageWidth('insufficient')}"></span></div><div class="coverage-legend"><span><i class="normal"></i>未触发 <b>{{ number(activeSummary.normal) }}</b></span><span><i class="triggered"></i>已触发 <b>{{ number(activeSummary.triggered) }}</b></span><span><i class="insufficient"></i>无法判断 <b>{{ number(activeSummary.insufficient) }}</b></span></div><div class="coverage-note"><span>待配置 {{ number(activeSummary.unconfigured) }} 项</span><span>不适用 {{ number(activeSummary.not_applicable) }} 项</span><button class="text-button" @click="viewChecks" :disabled="!!busy">{{ showChecks?'收起待核查项':'查看待核查项' }} →</button></div></section><section class="panel selection-panel"><div class="panel-title"><h2>辅助指标选择</h2><span class="tag muted">{{ selectionMethod(currentRun.selection?.mode) }}</span></div><div class="selection-tags"><span v-for="id in (currentRun.selection?.indicator_ids || [])" :key="id">{{ indicatorName(id) }}</span><span v-if="!currentRun.selection?.indicator_ids?.length">本次未补充辅助指标</span></div><p>{{ agentModeDescription(currentRun.selection?.mode) }}</p></section></div>
             <section v-if="showChecks && currentRun" class="panel diagnostic-panel"><div class="panel-title"><div><h2>待核查的检查项</h2><p>这些记录不计为“未触发”，也不会据此直接生成风险函。</p></div><select v-model="checkFilter" aria-label="检查状态"><option value="insufficient">数据不足 / 口径不符</option><option value="unconfigured">规则待配置</option></select></div><div v-if="!visibleChecks.length" class="empty-state compact"><h3>当前类型没有待核查项</h3></div><div v-else class="table-scroll"><table><thead><tr><th>行社</th><th>指标</th><th>原因</th></tr></thead><tbody><tr v-for="item in visibleChecks" :key="String(item.org_id)+'-'+String(item.rule_id)"><td>{{ item.org_name }}</td><td>{{ indicatorName(item.indicator_id) }}</td><td class="description-cell">{{ item.reason }}</td></tr></tbody></table></div></section>
           </section>
+
+          <code-exploration v-if="tab==='explore'" :snapshots="boot.snapshots" :agent-mode="boot.meta.agent_mode" />
 
           <section v-if="tab==='rules'" class="rules-page">
             <div class="info-banner"><span class="info-mark">i</span><p>默认使用 <strong>排名 ≥72</strong>。82 家全部参评且无并列时，对应第 72—82 名，共 11 家。占比阈值需要自行配置，所有当前设置均用于测试。</p></div>
