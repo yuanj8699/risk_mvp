@@ -9,7 +9,7 @@
 1. **机构与指标目录**：稳定ID、父机构、层级、单位、更新频率。
 2. **数据接入**：文件或固定视图统一转成标准事实，校验后原子保存快照。
 3. **规则检测**：对82家行社逐项执行适用规则，分别记录触发、未触发、数据不足、未配置。
-4. **分析与函件**：Pi Agent 选择辅助指标、读取同一快照证据并形成核查建议；Python 用固定证据生成可编辑的通用测试函件。
+4. **分析与函件**：Pi Agent 经 MCP 主动补查任务范围内的当前值和历史，并提交有引用的建议；Python 用触发事实和被引用的补查证据生成通用测试函件。
 5. **状态处理**：绑定函件修订进行审核、生成稳定的模拟回执和审计记录。
 
 ## 机构树
@@ -30,6 +30,38 @@
 
 未来若增加客户类型、业务类型等维度，需要将维度键纳入唯一约束，或将当前指标ID映射到明确的版本化度量定义。不要靠拼接中文名称模拟所有维度。
 
+## 共享服务与只读业务MCP
+
+`backend/services.py` 提供 API 和 MCP 共用的业务服务；`backend/app.py` 负责应用状态写入，`backend/mcp_server.py` 只将服务暴露为4个工具，不导入应用启动生命周期、不建表或初始化种子。
+
+| 工具 | 输入与输出 | 关键边界 |
+| --- | --- | --- |
+| `search_indicators` | 关键词与分页 → 指标ID、名称、口径、单位、频率和排名信息 | 只查询目录，不发布规则 |
+| `query_metrics` | 指标ID、机构、当前/历史、分页 → 统一证据及覆盖信息 | 机构、来源、快照和截至日由任务限定 |
+| `check_risks` | 宿主绑定的任务 → 检查统计、逐项结果和触发证据 | 纯检测，不创建运行或再次调用Agent |
+| `get_letter_template` | 模板版本 → 模板文本及填充字段 | 不生成审批、不执行下发 |
+
+Python 使用 FastMCP 4.1.4，TypeScript 使用 `@modelcontextprotocol/sdk` 1.32.2。`agent/src/mcp-business.ts` 是一层薄客户端：以 bridge 提供的当前 `sys.executable` 启动 `-m backend.mcp_server`，通过 stdio 通信，并在完成、失败或取消后关闭会话。服务端从 `RISK_TASK_RUN_ID`、`RISK_TASK_ORG_ID` 加载已提交任务并收窄行社范围；这些值由宿主设置，不开放为模型工具参数。
+
+当前 MCP 实际查询 `RISK_DATABASE_URL` 应用库中已导入或合成的快照。`RISK_SOURCE_DATABASE_URL` 仍只用于显式运行 `scripts/import_from_database.py`，不会进入应用建表/种子流程。TBase/PostgreSQL 协议是目标指标源方向；真实表结构、字段映射与权限尚未联调，本版没有实时连接外部指标库。
+
+## 固定任务上下文与查询口径
+
+`TaskContext` 保存于 `run.selection.task_context`，字段为：
+
+```text
+run_id / topic / snapshot_id / as_of / rule_snapshot
+org_scope / history_snapshot_ids / source
+```
+
+`run.rule_snapshot` 同时保留规则副本。创建任务时就固定同 `source`、状态为 `ready`、快照日期不晚于 `as_of` 的历史快照ID集合。此后新增导入、规则编辑或来自其他来源的数据都不进入该集合；固定快照不可用时明确报错，不悄悄缩短历史。每家行社分析只允许读取自身事实。
+
+检测与补查用途不同：`check_risks` 检测选定快照，保留该批次的缺数；`query_metrics` 可以在冻结历史范围内取截至日最新实际期次。例如截至10月28日，季度指标可以返回9月30日值。当前值采用日频7天、季频120天的测试新鲜度限制；较新的缺失或不合格值不能由较早正常值替代。
+
+历史按来源、机构、指标和实际日期去重，同期观测优先选定快照，其余选最近快照，再按实际日期排序。旧期次可作为历史证据，`current_issue` 单独说明其是否已不适合作为当前值。缺失、质量不合格和单位冲突保留原状态；分页响应同时给出 `total / next_offset / coverage`。
+
+统一证据包含 `evidence_id / org_id / indicator_id / indicator_name / value / unit / data_date / snapshot_id / source_record_id / quality_status`，并保留排名、`value_display` 与兼容字段 `id`。`evidence_id` 和 `id` 使用固定观测主键，重复查询不会产生随机新身份；金额与比率原始值仍用十进制字符串。
+
 ## 规则语义
 
 排名条件暂为 `rank >= 72`，使用全省82家行社参评排名。完整无并列时命中11家，遇并列按条件命中。测试版种子排名已经给出，检测层不重排。
@@ -42,24 +74,44 @@
 
 ## Pi Agent 与 Python 的边界
 
-Agent 使用 [Pi 框架](https://github.com/earendil-works/pi)（原 `badlogic/pi-mono`），锁定 `@earendil-works/pi-agent-core` 与 `@earendil-works/pi-ai` 1.4.0。TypeScript 源码与工具位于 `agent/`，Python 的 `backend/analysis.py` 通过 Node 子进程调用 `agent/dist/runner.js`，以标准输入、输出交换单次 JSON 请求和结果。
+Agent 使用 [Pi 框架](https://github.com/earendil-works/pi)（原 `badlogic/pi-mono`），锁定 `@earendil-works/pi-agent-core` 与 `@earendil-works/pi-ai` 1.4.0。Python 的 `backend/analysis.py` 通过 Node 子进程调用 `agent/dist/runner.js`，以标准输入、输出交换单次 JSON 请求和结果；Node 再经独立 stdio 会话调用业务 MCP。
 
 一次监测分为两次 Agent 调用：
 
 1. `select` 接收风险主题、指标目录和必查指标，返回辅助指标、选择理由和限制。返回值必须属于目录且包含必查指标；Python 仍独立执行全部启用规则。
-2. `explain_batch` 接收按行社固定的触发证据和有效辅助值。Pi 通过只读业务工具读取证据并提交结构化分析；数值事实由证据生成，模型只补充待核查解释和建议。
+2. `explain_batch(cases, context)` 接收触发证据与固定任务上下文，不预装 `supporting` 辅助数组。每次模型请求前提供当前任务状态；Pi 可主动查询该行社的辅助指标与历史，并将实际查得的证据登记到本次可引用集合。
 
-Python 保留数据库访问、规则计算、函件渲染、审核和模拟下发。Pi 不取得这些写入能力。各行社的分析结果和工具执行记录随本次结果保存；Agent 不能修改既有排名、阈值、发函对象或审批状态。
+`submit_analysis` 保留为本地结构化提交工具，可以引用原始触发证据和本次 MCP 查询取得的有效观测。机构、来源、快照范围与证据身份均须匹配任务；未查到的证据不能通过随意填写ID被接受。数值事实由程序生成，模型只提出待核查解释和建议。参数缺失、未知指标等可纠正错误会回传模型，在原有预算内允许改正；数据源不可用、超时和取消则明确失败。
 
-默认 `RISK_PI_MODE=demo` 使用本地确定性的 `streamFn` 模拟模型响应，执行真实的 Pi Agent 工具循环。它可验证工具与业务链路，不代表调用了真实模型。`model` 模式由 `RISK_PI_PROVIDER`、`RISK_PI_MODEL` 和 `RISK_PI_API_KEY` 配置，且会向所配置的服务发送本批次目录与证据，只应用于获准的服务及数据。小Q协议未确认，不能假定它兼容某个现成供应商接口。
+Python 保留规则计算、数据库写入、函件渲染、审核和模拟下发。Pi 只有业务读取能力；各行社的 `queried_evidence`、`evidence_references` 和工具轨迹随分析保存，`transport` 区分 `mcp` 查询与 `local` 提交。Agent 不能修改既有排名、阈值、发函对象或审批状态。
+
+默认 `RISK_PI_MODE=demo` 使用本地确定性的 `streamFn` 模拟模型响应，Pi 循环、MCP 通信与数据库查询均真实执行。它验证工具与业务链路，不代表模型推理效果。`model` 模式由 `RISK_PI_PROVIDER`、`RISK_PI_MODEL` 和 `RISK_PI_API_KEY` 配置，会向所配置的服务发送目录、证据和查询结果，只应用于获准的服务及数据。小Q协议未确认，不能假定它兼容某个现成供应商接口。
 
 真实模式只接受 Pi 内置目录中的供应商与模型组合。可选 `RISK_PI_BASE_URL` 只能替换为同一协议的 HTTP(S) 端点，URL 不接受嵌入凭据；这不构成对未知小Q协议的适配。
 
-Agent 有工具轮次和执行时限，Python 还限定每次子进程最长180秒。配置缺失、模型错误、超时或返回值不合格会返回502并回滚整批运行，修复原因后可重新运行；不会自动切回离线演示。运行幂等标识包含 Agent 模式与模型配置，旧模板结果仍能读取，不会被新模式覆盖。真实模型服务目前尚未完成联调。
+## 短事务、运行状态与执行预算
+
+运行采用三个阶段，等待模型期间不持有写事务：
+
+1. 短事务创建 `running` 任务并提交固定上下文；并发的相同 `run_key` 请求复用已有任务。
+2. 执行纯规则检测，用短事务保存检查和触发证据；随后关闭会话，再调用 Pi/MCP。MCP 的另一个连接此时能读到任务。
+3. 新短事务保存合格分析并标记 `completed`。配置、模型、工具或结果校验失败时标记 `failed`，保存错误信息，并保留先前已提交的检测证据；未完成分析不允许拟函。
+
+首次执行失败返回 HTTP 502，`detail` 是 `{run_id, message}`。相同输入的后续请求默认返回已有状态，包括 `failed`；显式提交 `retry: true` 才会重试失败任务。数据库条件更新只有在状态仍为 `failed` 时才能将其改为 `running`，防止并发重试重复执行。重试复用原固定上下文；规则版本、主题、机构范围或模型配置变化会改变运行身份并创建新任务。模型出错不会自动退回演示结果。
+
+`RISK_PI_BATCH_TIMEOUT_MS` 默认120000毫秒，作为每次 Node 请求的任务期限，Python 传递同一预算并额外留10秒供 MCP 退出清理。行社分析还受默认30秒、10次请求和12次工具调用的限制。Node 在 `finally` 关闭 MCP，取消也进入清理；如果进程超过预算及清理余量，Python 终止本次进程树。
+
+当前为同步任务，没有持久 worker、任务租约或自动恢复机制。应用被强制终止可能留下 `running` 状态，需要人工处理，不能将显式失败重试当作完整的崩溃恢复。真实模型服务也尚未完成联调。
+
+## 已留存的主动查询样例
+
+[单行社记录](examples/issue-1-single-society.json)固定合成行社082和2026-10-28批次：五级不良贷款率3.15%、全省排名82/82触发规则；Pi 经 MCP 查出逾期贷款率4.04%，以及8月末、9月末不良贷款率3.07%、3.11%，引用这些观测后形成[函件草稿](examples/issue-1-letter.txt)。[默认规则批量记录](examples/issue-1-batch.json)包含38家风险行社、49项触发、3项数据不足及82项占比待配置。上述数据均为合成数据，模型为确定性替身，实际查询和证据引用已走通。
 
 ## 函件与发送
 
 草稿修订后回到待审核状态；旧版本不能被发送。审核绑定正文、证据与case。模拟发送只更新本地状态并生成稳定回执，不具备对外发送权限或接口。
+
+草稿采用 `test-v1` 模板：触发事实直接来自事件证据，补充查询段落仅列出分析实际引用的 `queried_evidence`，保留指标实际日期和证据ID。模型自由文本不能改写这些数值事实。
 
 真实风险管理系统对接时再实现：服务端身份、审批策略、目标机构映射、outbox、发送请求号、渠道幂等和结果查询。接口超时且结果未知时先查询/核对，不能仅因本地未保存成功就再次发送。
 

@@ -11,10 +11,14 @@ import asyncio
 import csv
 import importlib
 import io
+import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
+from threading import Event
 
 import pytest
 import httpx
@@ -31,6 +35,7 @@ def api():
     with tempfile.TemporaryDirectory(prefix="risk-agent-tests-") as directory:
         previous = os.environ.get("RISK_DATABASE_URL")
         previous_mode = os.environ.get("RISK_PI_MODE")
+        previous_source = os.environ.pop("RISK_SOURCE_DATABASE_URL", None)
         os.environ["RISK_PI_MODE"] = "demo"
         os.environ["RISK_DATABASE_URL"] = "sqlite:///" + str(Path(directory) / "test.db")
         os.environ["RISK_DEMO"] = "1"
@@ -80,6 +85,8 @@ def api():
             os.environ.pop("RISK_PI_MODE", None)
         else:
             os.environ["RISK_PI_MODE"] = previous_mode
+        if previous_source is not None:
+            os.environ["RISK_SOURCE_DATABASE_URL"] = previous_source
 
 
 def good(response):
@@ -403,40 +410,67 @@ def test_pi_runtime_reports_demo_mode_and_preserves_evidence(api):
         assert stored["summary"]["triggered"] == 1
 
 
-def test_unconfigured_pi_model_fails_without_creating_a_run(api, monkeypatch):
-    before = good(api.get("/api/runs"))
-    snapshot = good(api.get("/api/bootstrap"))["snapshots"][0]
-    monkeypatch.setenv("RISK_PI_MODE", "model")
-    for name in ("RISK_PI_PROVIDER", "RISK_PI_MODEL", "RISK_PI_API_KEY"):
-        monkeypatch.delenv(name, raising=False)
-    response = api.post("/api/runs", json={"snapshot_id": snapshot["id"], "risk_topic": "配置错误验证"})
-    assert response.status_code == 502
-    assert "Pi Agent" in response.json()["detail"]
-    assert good(api.get("/api/runs")) == before
+def test_unconfigured_pi_model_retains_failed_task_and_triggered_evidence(api, monkeypatch):
+    org = societies(api)[0]
+    snapshot = good(import_csv(api, [row(org, rank="82")]))
+    with only_rule(api, rule_for(api, "rank", "npl_ratio")):
+        monkeypatch.setenv("RISK_PI_MODE", "model")
+        for name in ("RISK_PI_PROVIDER", "RISK_PI_MODEL", "RISK_PI_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        payload = {"snapshot_id": snapshot["snapshot_id"], "risk_topic": "配置错误验证", "org_scope": [org["id"]]}
+        response = api.post("/api/runs", json=payload)
+        assert response.status_code == 502
+        failure = response.json()["detail"]
+        assert "Pi Agent" in failure["message"]
+        saved = next(item for item in good(api.get("/api/runs")) if item["id"] == failure["run_id"])
+        assert saved["status"] == "failed"
+        assert saved["summary"]["triggered"] == 1
+        cases = cases_for(api, saved["id"])
+        assert len(cases) == 1 and cases[0]["org_id"] == org["id"]
+        detail = good(api.get(f"/api/cases/{cases[0]['id']}"))
+        assert detail["evidence"][0]["rank"] == 82
+        assert api.post(f"/api/cases/{cases[0]['id']}/draft").status_code == 409
+        repeated = good(api.post("/api/runs", json=payload))
+        assert repeated["id"] == saved["id"] and repeated["status"] == "failed"
 
 
-def test_agent_batch_failure_rolls_back_and_can_be_retried(api, monkeypatch):
+def test_agent_failure_retains_evidence_and_requires_explicit_retry(api, monkeypatch):
     from backend.analysis import AnalysisError, provider
 
     org = societies(api)[0]
     snapshot = good(import_csv(api, [row(org, rank="82")]))
     with only_rule(api, rule_for(api, "rank", "npl_ratio")):
-        before_runs = good(api.get("/api/runs"))
-        before_cases = good(api.get("/api/cases"))
+        payload = {"snapshot_id": snapshot["snapshot_id"], "risk_topic": "信用风险", "org_scope": [org["id"]]}
+        calls = []
 
-        def unavailable(cases):
+        def unavailable(cases, context):
+            calls.append(context["run_id"])
             raise AnalysisError("测试模拟：Pi 分析服务不可用")
 
         with monkeypatch.context() as patch:
             patch.setattr(provider, "explain_batch", unavailable)
-            response = api.post("/api/runs", json={"snapshot_id": snapshot["snapshot_id"], "risk_topic": "信用风险"})
-        assert response.status_code == 502
-        assert good(api.get("/api/runs")) == before_runs
-        assert good(api.get("/api/cases")) == before_cases
-        assert run(api, snapshot["snapshot_id"])["summary"]["case_count"] == 1
+            response = api.post("/api/runs", json=payload)
+            assert response.status_code == 502
+            run_id = response.json()["detail"]["run_id"]
+            retained = cases_for(api, run_id)
+            assert len(retained) == 1
+            evidence = good(api.get(f"/api/cases/{retained[0]['id']}"))["evidence"]
+            assert evidence[0]["rank"] == 82
+            assert api.post(f"/api/cases/{retained[0]['id']}/draft").status_code == 409
+            repeated = good(api.post("/api/runs", json=payload))
+            assert repeated["id"] == run_id and repeated["status"] == "failed"
+            assert calls == [run_id]
+
+        retried = good(api.post("/api/runs", json={**payload, "retry": True}))
+        assert retried["id"] == run_id and retried["status"] == "completed"
+        assert retried["summary"]["case_count"] == 1
+        updated = cases_for(api, run_id)
+        assert [case["id"] for case in updated] == [case["id"] for case in retained]
+        assert good(api.get(f"/api/cases/{updated[0]['id']}"))["evidence"] == evidence
+        assert good(api.post(f"/api/cases/{updated[0]['id']}/draft"))["status"] == "draft"
 
 
-def test_stale_supporting_values_do_not_enter_pi_analysis(api):
+def test_stale_supporting_value_is_explicit_history_not_current_change(api):
     org = societies(api)[0]
     snapshot = good(import_csv(api, [row(org, rank="82"),
                                    row(org, "funds_npl_change", "-30000", data_date="2025-01-01")]))
@@ -444,4 +478,250 @@ def test_stale_supporting_values_do_not_enter_pi_analysis(api):
         result = run(api, snapshot["snapshot_id"])
         case = cases_for(api, result["id"])[0]
         detail = good(api.get(f"/api/cases/{case['id']}"))
-        assert "资金业务不良余额比年初增量" not in "\n".join(detail["analysis"]["facts"])
+        analysis = detail["analysis"]
+        historical = [item for item in analysis["queried_evidence"]
+                      if item["indicator_id"] == "funds_npl_change"]
+        assert historical and all(item["data_date"] == "2025-01-01" and item["current_issue"] for item in historical)
+        facts = [text for text in analysis["facts"] if "资金业务不良余额比年初增量" in text]
+        assert facts and all("2025-01-01" in text and "历史" in text and "不代表本期变化" in text for text in facts)
+        assert "较年初减少" not in "\n".join(facts)
+
+
+def test_pi_queries_scoped_evidence_through_mcp_and_renders_it(api, monkeypatch):
+    from backend.analysis import provider
+
+    captured = {}
+    original = provider.explain_batch
+
+    def observe(cases, context):
+        captured["cases"] = deepcopy(cases)
+        captured["context"] = deepcopy(context)
+        return original(cases, context)
+
+    monkeypatch.setattr(provider, "explain_batch", observe)
+    topic = "核查不良贷款率与逾期率，并比较同口径历史变化"
+    with only_rule(api, rule_for(api, "rank", "npl_ratio")):
+        result = good(api.post("/api/runs", json={
+            "snapshot_id": "demo-2026-10-28", "risk_topic": topic, "org_scope": ["LS082"],
+        }))
+        context = captured["context"]
+        assert context["run_id"] == result["id"]
+        assert context["topic"] == topic
+        assert context["snapshot_id"] == "demo-2026-10-28"
+        assert context["as_of"] == "2026-10-28"
+        assert context["org_scope"] == ["LS082"]
+        assert context["source"] == "synthetic"
+        assert {"demo-2026-08-31", "demo-2026-09-30"} <= set(context["history_snapshot_ids"])
+        assert result["selection"]["task_context"] == context
+        assert len(captured["cases"]) == 1
+        assert not captured["cases"][0].get("supporting")
+        cases = cases_for(api, result["id"])
+        assert len(cases) == 1 and cases[0]["org_id"] == "LS082"
+        detail = good(api.get(f"/api/cases/{cases[0]['id']}"))
+        analysis = detail["analysis"]
+        assert any(event.get("tool") == "query_metrics" and event.get("transport") == "mcp"
+                   for event in analysis["trace"])
+        queried = analysis["queried_evidence"]
+        fields = {"evidence_id", "org_id", "indicator_id", "indicator_name", "value", "unit",
+                  "data_date", "snapshot_id", "source_record_id", "quality_status"}
+        assert queried and all(fields <= item.keys() for item in queried)
+        assert all(item["org_id"] == "LS082" and item["data_date"] <= context["as_of"] for item in queried)
+        assert all(item["snapshot_id"] in context["history_snapshot_ids"] for item in queried)
+        assert all(isinstance(item["value"], str) for item in queried if item["value"] is not None)
+        overdue = [item for item in queried if item["indicator_id"] == "overdue_ratio"]
+        assert overdue
+        assert any(item["indicator_id"] == "npl_ratio" and item["data_date"] < context["as_of"] for item in queried)
+        references = analysis["evidence_references"]
+        cited = {ref for entries in references.values() for proposal in entries for ref in proposal["evidence_ids"]}
+        assert cited & {item["evidence_id"] for item in overdue}
+        known = {item["evidence_id"] for item in queried} | {item.get("evidence_id", item.get("id")) for item in detail["evidence"]}
+        assert cited <= known
+        letter = good(api.post(f"/api/cases/{cases[0]['id']}/draft"))
+        assert "逾期贷款率" in letter["content"] and "4.04%" in letter["content"]
+        assert "2026-10-28" in letter["content"]
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_concurrent_run_has_one_owner_and_model_wait_uses_short_transactions(api, monkeypatch, retry):
+    from backend.analysis import AnalysisError, provider
+    from backend.app import app
+
+    org = societies(api)[0]
+    snapshot = good(import_csv(api, [row(org, rank="75"), row(org, "overdue_ratio", "2.75")]))
+    selected = rule_for(api, "rank", "npl_ratio")
+    entered, release = Event(), Event()
+    original = provider.explain_batch
+    captured = []
+
+    def block(cases, context):
+        captured.append((deepcopy(cases), deepcopy(context)))
+        entered.set()
+        if not release.wait(30):
+            raise AssertionError("test did not release the simulated model wait")
+        return original(cases, context)
+
+    with only_rule(api, selected, {"cutoff": 72}):
+        payload = {"snapshot_id": snapshot["snapshot_id"], "risk_topic": f"并发与冻结验证-{retry}", "org_scope": [org["id"]]}
+        failed_id = None
+        prior_case_ids = None
+        if retry:
+            def fail(cases, context):
+                raise AnalysisError("测试模拟首次模型失败")
+            with monkeypatch.context() as patch:
+                patch.setattr(provider, "explain_batch", fail)
+                failed = api.post("/api/runs", json=payload)
+            assert failed.status_code == 502
+            failed_id = failed.json()["detail"]["run_id"]
+            prior_case_ids = [item["id"] for item in cases_for(api, failed_id)]
+        monkeypatch.setattr(provider, "explain_batch", block)
+
+        async def race():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+                first = asyncio.create_task(client.post("/api/runs", json={**payload, "retry": retry}))
+                try:
+                    assert await asyncio.to_thread(entered.wait, 30), "analysis callback was not reached"
+                    context = captured[0][1]
+                    run_id = context["run_id"]
+                    saved = next(item for item in good(await client.get("/api/runs")) if item["id"] == run_id)
+                    assert saved["status"] == "running"
+                    assert saved["selection"]["task_context"] == context
+                    assert context["org_scope"] == [org["id"]]
+                    frozen = next(rule for rule in context["rule_snapshot"] if rule["id"] == selected["id"])
+                    assert frozen["params"]["cutoff"] == 72
+                    retained = good(await client.get("/api/cases", params={"run_id": run_id}))
+                    assert len(retained) == 1 and retained[0]["org_id"] == org["id"]
+                    if prior_case_ids is not None:
+                        assert [item["id"] for item in retained] == prior_case_ids
+                    # A second request must observe the committed owner, not invoke Pi again.
+                    duplicate = good(await asyncio.wait_for(client.post("/api/runs", json={**payload, "retry": retry}), 5))
+                    assert duplicate["id"] == run_id and duplicate["status"] == "running"
+                    assert len(captured) == 1
+                    # Both writes use independent database sessions while the model is waiting.
+                    edited = good(await asyncio.wait_for(client.patch(f"/api/rules/{selected['id']}", json={"params": {"cutoff": 82}}), 5))
+                    assert edited["params"]["cutoff"] == 82 and edited["version"] > frozen["version"]
+                    imported = good(await asyncio.wait_for(client.post("/api/import", files={
+                        "file": ("late-snapshot.csv", csv_bytes([row(org, "overdue_ratio", "99.99")]), "text/csv"),
+                    }), 5))
+                    assert imported["snapshot_id"] not in context["history_snapshot_ids"]
+                    assert captured[0][1] == context
+                    release.set()
+                    finished = good(await asyncio.wait_for(first, 60))
+                    assert finished["id"] == run_id and finished["status"] == "completed"
+                    assert finished["summary"]["triggered"] == 1
+                    assert finished["summary"]["case_count"] == 1
+                    assert finished["selection"]["task_context"] == context
+                    case = good(await client.get(f"/api/cases/{retained[0]['id']}"))
+                    assert case["evidence"][0]["rank"] == 75
+                    assert case["evidence"][0]["rule_version"] == frozen["version"]
+                    assert all(item["snapshot_id"] != imported["snapshot_id"] for item in case["analysis"]["queried_evidence"])
+                    assert len(captured) == 1
+                    if failed_id is not None:
+                        assert run_id == failed_id
+                finally:
+                    release.set()
+                    if not first.done():
+                        await asyncio.wait_for(first, 60)
+
+        asyncio.run(race())
+
+
+def test_python_process_timeout_follows_ts_batch_budget_with_cleanup_margin(monkeypatch):
+    from backend import analysis
+
+    calls = []
+
+    class Process:
+        returncode = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def communicate(self, payload, *, timeout):
+            calls[0]["payload"] = json.loads(payload)
+            calls[0]["timeout"] = timeout
+            return "{}", ""
+
+    def capture(command, **kwargs):
+        calls.append(kwargs)
+        return Process()
+
+    monkeypatch.setenv("RISK_PI_BATCH_TIMEOUT_MS", "23500")
+    monkeypatch.setattr(analysis.subprocess, "Popen", capture)
+    assert analysis.provider._request({"operation": "select"}) == {}
+    assert len(calls) == 1
+    assert calls[0]["timeout"] == 33.5
+    assert calls[0]["payload"]["budget_ms"] == 23500
+    assert calls[0]["env"]["RISK_PI_BATCH_TIMEOUT_MS"] == "23500"
+
+
+def test_pi_corrects_a_real_mcp_query_error_then_completes(api, monkeypatch, tmp_path):
+    """只替换模型流；Pi、MCP协议解析、数据库取证和API保存均真实执行。"""
+    from backend.analysis import provider
+
+    root = Path(__file__).resolve().parents[1]
+    runtime_url = (root / "agent/dist/runtime.js").as_uri()
+    script = tmp_path / "correct-mcp-query.mjs"
+    script.write_text(
+        'import { runRequest, toolStream } from ' + json.dumps(runtime_url) + ';\n' + r"""
+import assert from "node:assert/strict";
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const request = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+let corrected = false;
+const read = message => JSON.parse(message.content.filter(block => block.type === "text").map(block => block.text).join(""));
+const streamFn = (model, context) => {
+  const results = context.messages.filter(message => message.role === "toolResult");
+  const last = results.at(-1);
+  if (!last) return toolStream(model, "check_risks", {});
+  if (last.toolName === "check_risks") {
+    assert.equal(last.isError, false);
+    return toolStream(model, "query_metrics", { indicator_ids: ["NOT_A_REAL_INDICATOR"] });
+  }
+  if (last.toolName === "query_metrics" && last.isError) {
+    assert.match(last.content.map(block => block.text ?? "").join(""), /NOT_A_REAL_INDICATOR/);
+    assert.equal(corrected, false);
+    corrected = true;
+    return toolStream(model, "query_metrics", { indicator_ids: ["overdue_ratio"] });
+  }
+  assert.equal(last.isError, false);
+  if (last.toolName === "query_metrics") return toolStream(model, "get_letter_template", { version: "test-v1" });
+  const queried = results.find(message => message.toolName === "query_metrics" && !message.isError);
+  const evidence = read(queried).evidence;
+  assert.equal(evidence.length, 1);
+  const proposal = [{ text: "结合本次补查的逾期率核查贷款质量变化。", evidence_ids: [evidence[0].evidence_id] }];
+  return toolStream(model, "submit_analysis", { hypotheses: proposal, checks: proposal });
+};
+const result = await runRequest(request, { env: process.env, streamFn, limits: { requests: 8, tools: 8 } });
+assert.equal(corrected, true);
+process.stdout.write(JSON.stringify(result));
+""", encoding="utf-8")
+
+    def scripted_analysis(cases, context):
+        response = subprocess.run(
+            [shutil.which("node"), str(script)],
+            input=json.dumps({"operation": "explain_batch", "cases": cases, "context": context, "budget_ms": 30000}),
+            text=True, encoding="utf-8", capture_output=True, timeout=60,
+            env={**os.environ, "RISK_PYTHON_EXECUTABLE": sys.executable, "RISK_PROJECT_ROOT": str(root),
+                 "RISK_PI_MAX_REQUESTS": "8", "RISK_PI_MAX_TOOLS": "8"},
+        )
+        assert response.returncode == 0, response.stderr
+        return json.loads(response.stdout)["analyses"]
+
+    monkeypatch.setattr(provider, "explain_batch", scripted_analysis)
+    with only_rule(api, rule_for(api, "rank", "npl_ratio")):
+        result = good(api.post("/api/runs", json={
+            "snapshot_id": "demo-2026-10-28", "risk_topic": "纠正补查参数后继续分析", "org_scope": ["LS082"],
+        }))
+        assert result["status"] == "completed"
+        case = cases_for(api, result["id"])[0]
+        analysis = good(api.get(f"/api/cases/{case['id']}"))["analysis"]
+        query_events = [event for event in analysis["trace"]
+                        if event.get("tool") == "query_metrics" and event.get("transport") == "mcp"]
+        assert [event["status"] for event in query_events] == ["error", "ok"]
+        queried = analysis["queried_evidence"]
+        assert len(queried) == 1 and queried[0]["indicator_id"] == "overdue_ratio"
+        assert analysis["evidence_references"]["checks"][0]["evidence_ids"] == [queried[0]["evidence_id"]]
+        assert "4.04%" in good(api.post(f"/api/cases/{case['id']}/draft"))["content"]

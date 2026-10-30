@@ -1,0 +1,547 @@
+{
+  "scope": "合成样例；模型响应为确定性替身，MCP和SQLite查询真实执行",
+  "run": {
+    "id": "7baa2e0519e341e5ae8ab97d60739056",
+    "status": "completed",
+    "snapshot_id": "demo-2026-10-28",
+    "created_at": "2026-10-30T02:24:33.351860+00:00",
+    "summary": {
+      "evaluated": 1,
+      "triggered": 1,
+      "normal": 0,
+      "insufficient": 0,
+      "not_applicable": 0,
+      "unconfigured": 0,
+      "case_count": 1
+    },
+    "selection": {
+      "mode": "pi-demo",
+      "task_context": {
+        "run_id": "7baa2e0519e341e5ae8ab97d60739056",
+        "topic": "不良率排名异常，补查逾期率与历史变化",
+        "snapshot_id": "demo-2026-10-28",
+        "as_of": "2026-10-28",
+        "rule_snapshot": [
+          {
+            "id": "exists_funds_npl_balance",
+            "name": "资金业务不良存在提醒",
+            "kind": "exists",
+            "indicator_id": "funds_npl_balance",
+            "enabled": false,
+            "params": {
+              "op": "!=0"
+            },
+            "version": 2,
+            "description": "有效值非零即提醒；缺失不等于零，排名不参与筛选。",
+            "needs_config": false
+          },
+          {
+            "id": "rank_deposit_growth",
+            "name": "各项存款余额（人行）比年初增幅排名提醒",
+            "kind": "rank",
+            "indicator_id": "deposit_growth",
+            "enabled": false,
+            "params": {
+              "cutoff": 72,
+              "scope": "province_societies",
+              "population": 82,
+              "rank_direction": "1_best"
+            },
+            "version": 2,
+            "description": "沿用附件中的排名≥72。测试排名为合成数据，正式适用指标待核验。",
+            "needs_config": false
+          },
+          {
+            "id": "rank_new_npl_ratio",
+            "name": "不良发生净生成率排名提醒",
+            "kind": "rank",
+            "indicator_id": "new_npl_ratio",
+            "enabled": false,
+            "params": {
+              "cutoff": 72,
+              "scope": "province_societies",
+              "population": 82,
+              "rank_direction": "1_best"
+            },
+            "version": 2,
+            "description": "沿用附件中的排名≥72。测试排名为合成数据，正式适用指标待核验。",
+            "needs_config": false
+          },
+          {
+            "id": "rank_npl_ratio",
+            "name": "五级不良贷款率排名提醒",
+            "kind": "rank",
+            "indicator_id": "npl_ratio",
+            "enabled": true,
+            "params": {
+              "cutoff": 72,
+              "scope": "province_societies",
+              "population": 82,
+              "rank_direction": "1_best"
+            },
+            "version": 1,
+            "description": "沿用附件中的排名≥72。测试排名为合成数据，正式适用指标待核验。",
+            "needs_config": false
+          },
+          {
+            "id": "rank_overdue_ratio",
+            "name": "逾期贷款率排名提醒",
+            "kind": "rank",
+            "indicator_id": "overdue_ratio",
+            "enabled": false,
+            "params": {
+              "cutoff": 72,
+              "scope": "province_societies",
+              "population": 82,
+              "rank_direction": "1_best"
+            },
+            "version": 2,
+            "description": "沿用附件中的排名≥72。测试排名为合成数据，正式适用指标待核验。",
+            "needs_config": false
+          },
+          {
+            "id": "ratio_npl_ratio",
+            "name": "五级不良贷款率占比提醒",
+            "kind": "ratio",
+            "indicator_id": "npl_ratio",
+            "enabled": false,
+            "params": {
+              "threshold": null,
+              "op": ">="
+            },
+            "version": 2,
+            "description": "未提供行内占比阈值；保持待配置，不产生默认异常判断。",
+            "needs_config": true
+          }
+        ],
+        "org_scope": [
+          "LS082"
+        ],
+        "history_snapshot_ids": [
+          "demo-2026-08-31",
+          "demo-2026-09-30",
+          "demo-2026-10-28"
+        ],
+        "source": "synthetic"
+      },
+      "indicator_ids": [
+        "funds_npl_change",
+        "funds_npl_ratio",
+        "new_npl_ratio",
+        "npl_ratio",
+        "overdue_ratio"
+      ],
+      "attempt": 1,
+      "topic": "不良率排名异常，补查逾期率与历史变化",
+      "reasons": [
+        "所有已启用且适用的规则均执行；主题筛选不删除必查指标。",
+        "主题涉及信用或资金风险，补充关联指标供核查。"
+      ],
+      "limitations": [
+        "Pi Agent工具循环演示模式：本地确定性适配器，无真实大模型调用。",
+        "小Q专用接口尚未对接；不会自动产生新的阈值。"
+      ],
+      "runtime": {
+        "framework": "pi-agent-core",
+        "version": "1.4.0",
+        "provider": "risk-local-demo",
+        "model": "risk-local-demo",
+        "requests": 2,
+        "tool_calls": 2,
+        "mode": "demo",
+        "llm_connected": false
+      },
+      "trace": [
+        {
+          "event": "request",
+          "request": 1
+        },
+        {
+          "event": "tool",
+          "transport": "local",
+          "tool": "read_indicator_catalog",
+          "status": "ok",
+          "arguments": {}
+        },
+        {
+          "event": "request",
+          "request": 2
+        },
+        {
+          "event": "tool",
+          "transport": "local",
+          "tool": "submit_selection",
+          "status": "ok",
+          "arguments": {}
+        }
+      ]
+    }
+  },
+  "case": {
+    "id": "777c4f54c7554cc883d55c3728ef7be9",
+    "run_id": "7baa2e0519e341e5ae8ab97d60739056",
+    "org_id": "LS082",
+    "org_name": "合成行社082",
+    "region_name": "合成地区05",
+    "data_date": "2026-10-28",
+    "risk_types": [
+      "排名提醒"
+    ],
+    "status": "open",
+    "evidence_count": 1,
+    "headline": "1项规则触发 · 排名提醒",
+    "evidence": [
+      {
+        "evidence_id": "c0775956cef8454f8d09a6679dd98f61",
+        "id": "c0775956cef8454f8d09a6679dd98f61",
+        "org_id": "LS082",
+        "indicator_id": "npl_ratio",
+        "indicator_name": "五级不良贷款率",
+        "value": "3.15",
+        "value_display": "3.15%",
+        "unit": "%",
+        "data_date": "2026-10-28",
+        "snapshot_id": "demo-2026-10-28",
+        "source_record_id": "c0775956cef8454f8d09a6679dd98f61",
+        "quality_status": "valid",
+        "rank": 82,
+        "population": 82,
+        "rank_scope": "province_societies",
+        "rule_id": "rank_npl_ratio",
+        "rule_name": "五级不良贷款率排名提醒",
+        "rule_kind": "rank",
+        "rule_version": 1,
+        "reason": "全省排名82/82，达到排名≥72的测试规则",
+        "source": "synthetic"
+      }
+    ],
+    "analysis": {
+      "mode": "pi-demo",
+      "facts": [
+        "五级不良贷款率为3.15%；全省排名82/82，达到排名≥72的测试规则。",
+        "补查资金业务不良余额比年初增量为0.00元，数据日期2026-06-30。",
+        "历史补查五级不良贷款率为3.07%，数据日期2026-08-31。该历史期次不代表本期变化。",
+        "历史补查逾期贷款率为4.04%，数据日期2026-08-31。该历史期次不代表本期变化。",
+        "补查资金业务不良余额比年初增量为0.00元，数据日期2026-09-30。",
+        "历史补查五级不良贷款率为3.11%，数据日期2026-09-30。该历史期次不代表本期变化。",
+        "历史补查逾期贷款率为4.04%，数据日期2026-09-30。该历史期次不代表本期变化。",
+        "补查五级不良贷款率为3.15%，数据日期2026-10-28。",
+        "补查逾期贷款率为4.04%，数据日期2026-10-28。"
+      ],
+      "hypotheses": [
+        "仅凭汇总指标无法确认异常原因或责任；需结合行社明细和业务说明核查。"
+      ],
+      "checks": [
+        "复核排名的参评范围、指标方向及源数据，与同口径历史值比较。",
+        "结合本次补查的逾期贷款率、不良贷款率历史数据及资金业务增量核查变化；期次和口径应分别核对。"
+      ],
+      "evidence_references": {
+        "hypotheses": [
+          {
+            "text": "仅凭汇总指标无法确认异常原因或责任；需结合行社明细和业务说明核查。",
+            "evidence_ids": [
+              "c0775956cef8454f8d09a6679dd98f61"
+            ]
+          }
+        ],
+        "checks": [
+          {
+            "text": "复核排名的参评范围、指标方向及源数据，与同口径历史值比较。",
+            "evidence_ids": [
+              "c0775956cef8454f8d09a6679dd98f61"
+            ]
+          },
+          {
+            "text": "结合本次补查的逾期贷款率、不良贷款率历史数据及资金业务增量核查变化；期次和口径应分别核对。",
+            "evidence_ids": [
+              "bd15199146284d858aeb1e6254f53618",
+              "28d8dfe4b58e4023941db575ef3e3bc8",
+              "b6a566d9957e46969827516488762c1c",
+              "045af4635f1843e6bd7f38e66231ef2d",
+              "12de956ade5d4debb18ed338a380b9b2",
+              "db01f078b298424caca821e595ece748",
+              "c0775956cef8454f8d09a6679dd98f61",
+              "885d446fbab3453088855d8c5b9a5f57"
+            ]
+          }
+        ]
+      },
+      "queried_evidence": [
+        {
+          "evidence_id": "bd15199146284d858aeb1e6254f53618",
+          "id": "bd15199146284d858aeb1e6254f53618",
+          "org_id": "LS082",
+          "indicator_id": "funds_npl_change",
+          "indicator_name": "资金业务不良余额比年初增量",
+          "value": "0",
+          "value_display": "0.00元",
+          "unit": "元",
+          "data_date": "2026-06-30",
+          "snapshot_id": "demo-2026-08-31",
+          "source_record_id": "bd15199146284d858aeb1e6254f53618",
+          "quality_status": "valid",
+          "rank": null,
+          "population": null,
+          "rank_scope": "",
+          "source": "synthetic",
+          "usable": true,
+          "issue": null,
+          "current_issue": null
+        },
+        {
+          "evidence_id": "28d8dfe4b58e4023941db575ef3e3bc8",
+          "id": "28d8dfe4b58e4023941db575ef3e3bc8",
+          "org_id": "LS082",
+          "indicator_id": "npl_ratio",
+          "indicator_name": "五级不良贷款率",
+          "value": "3.07",
+          "value_display": "3.07%",
+          "unit": "%",
+          "data_date": "2026-08-31",
+          "snapshot_id": "demo-2026-08-31",
+          "source_record_id": "28d8dfe4b58e4023941db575ef3e3bc8",
+          "quality_status": "valid",
+          "rank": 82,
+          "population": 82,
+          "rank_scope": "province_societies",
+          "source": "synthetic",
+          "usable": true,
+          "issue": null,
+          "current_issue": "数据期次不满足测试新鲜度策略（日频指标允许滞后7天）"
+        },
+        {
+          "evidence_id": "b6a566d9957e46969827516488762c1c",
+          "id": "b6a566d9957e46969827516488762c1c",
+          "org_id": "LS082",
+          "indicator_id": "overdue_ratio",
+          "indicator_name": "逾期贷款率",
+          "value": "4.04",
+          "value_display": "4.04%",
+          "unit": "%",
+          "data_date": "2026-08-31",
+          "snapshot_id": "demo-2026-08-31",
+          "source_record_id": "b6a566d9957e46969827516488762c1c",
+          "quality_status": "valid",
+          "rank": 82,
+          "population": 82,
+          "rank_scope": "province_societies",
+          "source": "synthetic",
+          "usable": true,
+          "issue": null,
+          "current_issue": "数据期次不满足测试新鲜度策略（日频指标允许滞后7天）"
+        },
+        {
+          "evidence_id": "045af4635f1843e6bd7f38e66231ef2d",
+          "id": "045af4635f1843e6bd7f38e66231ef2d",
+          "org_id": "LS082",
+          "indicator_id": "funds_npl_change",
+          "indicator_name": "资金业务不良余额比年初增量",
+          "value": "0",
+          "value_display": "0.00元",
+          "unit": "元",
+          "data_date": "2026-09-30",
+          "snapshot_id": "demo-2026-10-28",
+          "source_record_id": "045af4635f1843e6bd7f38e66231ef2d",
+          "quality_status": "valid",
+          "rank": null,
+          "population": null,
+          "rank_scope": "",
+          "source": "synthetic",
+          "usable": true,
+          "issue": null,
+          "current_issue": null
+        },
+        {
+          "evidence_id": "12de956ade5d4debb18ed338a380b9b2",
+          "id": "12de956ade5d4debb18ed338a380b9b2",
+          "org_id": "LS082",
+          "indicator_id": "npl_ratio",
+          "indicator_name": "五级不良贷款率",
+          "value": "3.11",
+          "value_display": "3.11%",
+          "unit": "%",
+          "data_date": "2026-09-30",
+          "snapshot_id": "demo-2026-09-30",
+          "source_record_id": "12de956ade5d4debb18ed338a380b9b2",
+          "quality_status": "valid",
+          "rank": 82,
+          "population": 82,
+          "rank_scope": "province_societies",
+          "source": "synthetic",
+          "usable": true,
+          "issue": null,
+          "current_issue": "数据期次不满足测试新鲜度策略（日频指标允许滞后7天）"
+        },
+        {
+          "evidence_id": "db01f078b298424caca821e595ece748",
+          "id": "db01f078b298424caca821e595ece748",
+          "org_id": "LS082",
+          "indicator_id": "overdue_ratio",
+          "indicator_name": "逾期贷款率",
+          "value": "4.04",
+          "value_display": "4.04%",
+          "unit": "%",
+          "data_date": "2026-09-30",
+          "snapshot_id": "demo-2026-09-30",
+          "source_record_id": "db01f078b298424caca821e595ece748",
+          "quality_status": "valid",
+          "rank": 82,
+          "population": 82,
+          "rank_scope": "province_societies",
+          "source": "synthetic",
+          "usable": true,
+          "issue": null,
+          "current_issue": "数据期次不满足测试新鲜度策略（日频指标允许滞后7天）"
+        },
+        {
+          "evidence_id": "c0775956cef8454f8d09a6679dd98f61",
+          "id": "c0775956cef8454f8d09a6679dd98f61",
+          "org_id": "LS082",
+          "indicator_id": "npl_ratio",
+          "indicator_name": "五级不良贷款率",
+          "value": "3.15",
+          "value_display": "3.15%",
+          "unit": "%",
+          "data_date": "2026-10-28",
+          "snapshot_id": "demo-2026-10-28",
+          "source_record_id": "c0775956cef8454f8d09a6679dd98f61",
+          "quality_status": "valid",
+          "rank": 82,
+          "population": 82,
+          "rank_scope": "province_societies",
+          "source": "synthetic",
+          "usable": true,
+          "issue": null,
+          "current_issue": null
+        },
+        {
+          "evidence_id": "885d446fbab3453088855d8c5b9a5f57",
+          "id": "885d446fbab3453088855d8c5b9a5f57",
+          "org_id": "LS082",
+          "indicator_id": "overdue_ratio",
+          "indicator_name": "逾期贷款率",
+          "value": "4.04",
+          "value_display": "4.04%",
+          "unit": "%",
+          "data_date": "2026-10-28",
+          "snapshot_id": "demo-2026-10-28",
+          "source_record_id": "885d446fbab3453088855d8c5b9a5f57",
+          "quality_status": "valid",
+          "rank": 82,
+          "population": 82,
+          "rank_scope": "province_societies",
+          "source": "synthetic",
+          "usable": true,
+          "issue": null,
+          "current_issue": null
+        }
+      ],
+      "limitations": [
+        "内置数值与机构均为合成测试数据。",
+        "使用通用测试函件模板，尚未替换行内正式模板。",
+        "Pi Agent通过真实MCP查询数据库；模型响应为本地确定性演示，无真实大模型调用。"
+      ],
+      "trace": [
+        {
+          "event": "request",
+          "request": 1
+        },
+        {
+          "event": "tool",
+          "transport": "mcp",
+          "tool": "check_risks",
+          "status": "ok",
+          "arguments": {},
+          "evidence_ids": []
+        },
+        {
+          "event": "request",
+          "request": 2
+        },
+        {
+          "event": "tool",
+          "transport": "mcp",
+          "tool": "query_metrics",
+          "status": "ok",
+          "arguments": {
+            "indicator_ids": [
+              "overdue_ratio",
+              "npl_ratio",
+              "funds_npl_change"
+            ],
+            "history": true,
+            "limit": 100,
+            "offset": 0
+          },
+          "evidence_ids": [
+            "bd15199146284d858aeb1e6254f53618",
+            "28d8dfe4b58e4023941db575ef3e3bc8",
+            "b6a566d9957e46969827516488762c1c",
+            "045af4635f1843e6bd7f38e66231ef2d",
+            "12de956ade5d4debb18ed338a380b9b2",
+            "db01f078b298424caca821e595ece748",
+            "c0775956cef8454f8d09a6679dd98f61",
+            "885d446fbab3453088855d8c5b9a5f57"
+          ]
+        },
+        {
+          "event": "request",
+          "request": 3
+        },
+        {
+          "event": "tool",
+          "transport": "mcp",
+          "tool": "get_letter_template",
+          "status": "ok",
+          "arguments": {
+            "version": "test-v1"
+          },
+          "evidence_ids": []
+        },
+        {
+          "event": "request",
+          "request": 4
+        },
+        {
+          "event": "tool",
+          "transport": "local",
+          "tool": "submit_analysis",
+          "status": "ok",
+          "arguments": {},
+          "evidence_ids": [
+            "c0775956cef8454f8d09a6679dd98f61",
+            "bd15199146284d858aeb1e6254f53618",
+            "28d8dfe4b58e4023941db575ef3e3bc8",
+            "b6a566d9957e46969827516488762c1c",
+            "045af4635f1843e6bd7f38e66231ef2d",
+            "12de956ade5d4debb18ed338a380b9b2",
+            "db01f078b298424caca821e595ece748",
+            "885d446fbab3453088855d8c5b9a5f57"
+          ]
+        }
+      ],
+      "runtime": {
+        "framework": "pi-agent-core",
+        "version": "1.4.0",
+        "provider": "risk-local-demo",
+        "model": "risk-local-demo",
+        "requests": 4,
+        "tool_calls": 4,
+        "mode": "demo",
+        "llm_connected": false
+      },
+      "status": "completed"
+    },
+    "letter": null
+  },
+  "letter": {
+    "id": "44272ddb3f8e4f359a460b1046732d5d",
+    "case_id": "777c4f54c7554cc883d55c3728ef7be9",
+    "revision": 1,
+    "content": "风险提示函（本地测试通用模板）\n\n致：合成行社082\n\n根据截至2026-10-28纳入本批次的数据，以下指标触发当前测试规则：\n\n1. 五级不良贷款率：3.15%，数据日期2026-10-28。全省排名82/82，达到排名≥72的测试规则。\n\n\n补充查询证据：\n资金业务不良余额比年初增量：0.00元，数据日期2026-06-30，证据bd15199146284d858aeb1e6254f53618。\n五级不良贷款率：3.07%，数据日期2026-08-31，证据28d8dfe4b58e4023941db575ef3e3bc8。\n逾期贷款率：4.04%，数据日期2026-08-31，证据b6a566d9957e46969827516488762c1c。\n资金业务不良余额比年初增量：0.00元，数据日期2026-09-30，证据045af4635f1843e6bd7f38e66231ef2d。\n五级不良贷款率：3.11%，数据日期2026-09-30，证据12de956ade5d4debb18ed338a380b9b2。\n逾期贷款率：4.04%，数据日期2026-09-30，证据db01f078b298424caca821e595ece748。\n五级不良贷款率：3.15%，数据日期2026-10-28，证据c0775956cef8454f8d09a6679dd98f61。\n逾期贷款率：4.04%，数据日期2026-10-28，证据885d446fbab3453088855d8c5b9a5f57。\n请核查以下事项：\n1. 复核排名的参评范围、指标方向及源数据，与同口径历史值比较。\n2. 结合本次补查的逾期贷款率、不良贷款率历史数据及资金业务增量核查变化；期次和口径应分别核对。\n\n上述内容为指标事实与规则筛选结果，具体原因和责任尚待核查。请按正式业务流程补充核查说明。\n\n模板状态：行内正式模板尚未提供。\n环境：本地测试；模拟下发不构成真实发函。",
+    "status": "draft",
+    "evidence_hash": "087872cbd1c7d99291f9497ddf00b82066a559d692634fbc807d3cea802b0158",
+    "created_at": "2026-10-30T02:24:36.172253+00:00",
+    "receipt": null
+  }
+}

@@ -4,7 +4,7 @@ if not exist .venv\Scripts\python.exe (
     py -3 -m venv .venv
     if errorlevel 1 goto :failed
 )
-.venv\Scripts\python.exe -c "import fastapi, sqlalchemy, openpyxl, uvicorn, httpx, multipart" >nul 2>&1
+.venv\Scripts\python.exe -c "import fastapi, sqlalchemy, openpyxl, uvicorn, httpx, multipart, fastmcp" >nul 2>&1
 if errorlevel 1 (
     .venv\Scripts\python.exe -m pip install -r requirements.txt
     if errorlevel 1 goto :failed
@@ -14,7 +14,7 @@ if errorlevel 1 (
     echo Pi Agent requires Node.js 22.19 or newer.
     goto :failed
 )
-if not exist agent\node_modules\@earendil-works\pi-agent-core\package.json (
+if not exist agent\node_modules\@modelcontextprotocol\sdk\package.json (
     call npm --prefix agent ci --ignore-scripts
     if errorlevel 1 goto :failed
 )

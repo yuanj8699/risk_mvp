@@ -9,13 +9,20 @@ interface Indicator { id: string; name: string; unit: string; frequency: string;
 interface Rule { id: ID; name: string; kind: 'rank' | 'ratio' | 'exists'; indicator_id: string; enabled: boolean; params: Record<string, unknown>; version: number; needs_config: boolean; description: string }
 interface Snapshot { id: ID; name: string; data_date: string; source: string; is_demo: boolean; row_count: number; status: string }
 interface Summary { evaluated?: number; triggered?: number; normal?: number; insufficient?: number; not_applicable?: number; unconfigured?: number; case_count?: number }
-interface Selection { mode: string; topic?: string; indicator_ids: string[]; reasons: unknown[]; limitations: string[] }
+interface TaskContext { run_id: string; topic: string; snapshot_id: string; as_of: string; org_scope: string[] }
+interface Selection { task_context?: TaskContext; error?: string; mode: string; topic?: string; indicator_ids: string[]; reasons: unknown[]; limitations: string[] }
 interface Run { id: ID; status: string; snapshot_id: ID; created_at: string; summary: Summary; selection: Selection }
 interface Evidence { id: ID; indicator_id: string; indicator_name: string; value: string | number | null; value_display: string; unit: string; rank: number | null; population: number | null; data_date: string; rule_id: ID; rule_name: string; rule_kind: string; reason: string; quality_status: string }
 interface Receipt { id: ID; channel: string; status: string; created_at: string }
 interface CheckResult { org_id: ID; org_name: string; rule_id: ID; indicator_id: string; status: string; reason: string }
 interface Letter { id: ID; case_id: ID; revision: number; content: string; status: string; evidence_hash: string; created_at: string; receipt: Receipt | null }
-interface Analysis { mode: string; facts: string[]; hypotheses: string[]; checks: string[]; limitations: string[] }
+interface QueryEvidence { evidence_id: string; indicator_name: string; value_display: string; data_date: string; snapshot_id: string; usable: boolean }
+interface Analysis {
+  mode: string; facts: string[]; hypotheses: string[]; checks: string[]; limitations: string[];
+  queried_evidence?: QueryEvidence[];
+  evidence_references?: { checks: { text: string; evidence_ids: string[] }[] };
+  trace?: { event: string; tool?: string; status?: string; transport?: string }[];
+}
 interface ImportResult { snapshot_id: ID; row_count: number; warnings: string[] }
 // 列表只含摘要；打开详情后，接口才返回 evidence、analysis 与 letter。
 interface RiskCase {
@@ -139,6 +146,7 @@ createApp({
       }
       if (initial) {
         currentRun.value = data.latest_run;
+        if (data.latest_run?.selection.task_context) topic.value = data.latest_run.selection.task_context.topic;
         if (data.latest_run) {
           snapshotId.value = String(data.latest_run.snapshot_id);
           await loadCases(data.latest_run.id);
@@ -188,7 +196,23 @@ createApp({
       tab.value = 'monitor';
       regionFilter.value = '';
       query.value = '';
-      notify(`监测完成：${run.summary.case_count ?? cases.value.length} 家行社形成风险事项。`);
+      notify(run.status === 'completed'
+        ? `监测完成：${run.summary.case_count ?? cases.value.length} 家行社形成风险事项。`
+        : run.status === 'failed' ? '该任务分析失败，触发证据已保留，可在运行记录中重试。' : '任务正在执行，结果就绪后可重新查看。');
+    });
+    // 重试沿用原任务主题和机构范围，服务端以条件更新保证仅一个执行者。
+    const retryRun = (run: Run) => action('retry', async () => {
+      const context = run.selection.task_context;
+      if (!context) throw new Error('旧任务没有固定上下文，请重新运行监测。');
+      const result = await send<Run>('/api/runs', {
+        snapshot_id: context.snapshot_id, risk_topic: context.topic,
+        org_scope: context.org_scope, retry: true
+      });
+      currentRun.value = result;
+      await loadCases(result.id);
+      await loadBootstrap();
+      tab.value = 'monitor';
+      notify(result.status === 'completed' ? '重试完成。' : '已取得任务状态，请查看运行记录。');
     });
     const openRun = (run: Run) => action('history', async () => {
       currentRun.value = run;
@@ -288,7 +312,7 @@ createApp({
       notify(`已导入 ${number(result.row_count)} 条记录，形成独立数据快照。`);
     });
     onMounted(initialize);
-    return { boot, loading, fatal, error, toast, busy, tab, nav, pageTitle, snapshotId, selectedSnapshot, currentRunSnapshot, topic, currentRun, runs, cases, checks, showChecks, checkFilter, visibleChecks, activeSummary, visibleCases, regions, societies, regionFilter, query, selectedCase, drawerTab, letter, letterText, letterDirty, ruleInputs, fileInput, importFile, importResult, orgQuery, indicatorQuery, visibleIndicators, configuredRules, coverageWidth, number, shortId, dateTime, indicatorName, snapshotName, ruleKind, agentModeLabel, selectionMethod, agentModeDescription, statusName, statusClass, reasonText, children, initialize, runAnalysis, openRun, viewChecks, openCase, closeCase, createDraft, saveLetter, approveLetter, simulateSend, saveRule, toggleRule, chooseFile, upload };
+    return { boot, loading, fatal, error, toast, busy, tab, nav, pageTitle, snapshotId, selectedSnapshot, currentRunSnapshot, topic, currentRun, runs, cases, checks, showChecks, checkFilter, visibleChecks, activeSummary, visibleCases, regions, societies, regionFilter, query, selectedCase, drawerTab, letter, letterText, letterDirty, ruleInputs, fileInput, importFile, importResult, orgQuery, indicatorQuery, visibleIndicators, configuredRules, coverageWidth, number, shortId, dateTime, indicatorName, snapshotName, ruleKind, agentModeLabel, selectionMethod, agentModeDescription, statusName, statusClass, reasonText, children, initialize, runAnalysis, retryRun, openRun, viewChecks, openCase, closeCase, createDraft, saveLetter, approveLetter, simulateSend, saveRule, toggleRule, chooseFile, upload };
   },
   template: `
     <div v-if="loading" class="initial-loading"><div class="loader"></div><p>正在加载风险监测工作台…</p></div>
@@ -310,7 +334,7 @@ createApp({
           <section v-if="tab==='monitor'" class="monitor-page">
             <div class="scope-strip"><span class="scope-chip">行社级</span><span>{{ boot.summary.region_count }} 个地区</span><span class="divider"></span><span>{{ boot.summary.org_count }} 家行社</span><span class="divider"></span><span>第四、五级机构已预留</span><span class="scope-caption">本期监测范围</span></div>
             <div class="stats-grid">
-              <article class="stat-card"><div class="stat-label">覆盖行社<span class="stat-symbol">◫</span></div><div class="stat-value">{{ boot.summary.org_count }}<small>家</small></div><p>全省行社范围</p></article>
+              <article class="stat-card"><div class="stat-label">覆盖行社<span class="stat-symbol">◫</span></div><div class="stat-value">{{ currentRun?.selection.task_context?.org_scope.length ?? boot.summary.org_count }}<small>家</small></div><p>本次任务机构范围</p></article>
               <article class="stat-card accent"><div class="stat-label">待关注行社<span class="stat-symbol">↗</span></div><div class="stat-value">{{ currentRun ? cases.length : '—' }}<small>家</small></div><p>{{ currentRun?'同一行社的多项信号合并展示':'运行监测后生成风险事项' }}</p></article>
               <article class="stat-card"><div class="stat-label">触发规则<span class="stat-symbol">≋</span></div><div class="stat-value">{{ currentRun ? number(activeSummary.triggered) : '—' }}<small>项</small></div><p>{{ configuredRules }} 条已配置规则参与检查</p></article>
               <article class="stat-card"><div class="stat-label">无法判断<span class="stat-symbol">!</span></div><div class="stat-value" :class="{warning:activeSummary.insufficient}">{{ currentRun ? number(activeSummary.insufficient) : '—' }}<small>项</small></div><p>缺数或口径不足，单独记录</p></article>
@@ -346,7 +370,7 @@ createApp({
             <section class="panel"><div class="panel-title"><h2>数据快照</h2><span class="subtle">{{ boot.snapshots.length }} 个批次</span></div><div class="table-scroll"><table><thead><tr><th>快照名称</th><th>数据日期</th><th>来源</th><th>记录数</th><th>状态</th><th></th></tr></thead><tbody><tr v-for="snapshot in boot.snapshots" :key="snapshot.id"><td><strong>{{ snapshot.name }}</strong><small>{{ shortId(snapshot.id) }}</small></td><td>{{ snapshot.data_date }}</td><td><span :class="['tag',snapshot.is_demo?'blue':'muted']">{{ snapshot.is_demo?'合成样例':snapshot.source }}</span></td><td>{{ number(snapshot.row_count) }}</td><td><span class="tag green">{{ statusName(snapshot.status) }}</span></td><td><button class="text-button" @click="snapshotId=String(snapshot.id);tab='monitor'">使用快照 →</button></td></tr></tbody></table></div></section>
           </section>
 
-          <section v-if="tab==='runs'" class="runs-page"><div class="info-banner"><span class="info-mark">i</span><p>相同快照、规则版本与风险主题重复运行会复用结果。修改配置或主题后重新运行，形成新的执行记录。</p></div><section class="panel"><div class="panel-title"><h2>历史监测批次</h2><span class="subtle">{{ runs.length }} 次</span></div><div v-if="!runs.length" class="empty-state compact"><span class="empty-icon">◷</span><h3>还没有运行记录</h3><p>首次监测完成后，可在这里查看覆盖情况和风险事项。</p><button class="button secondary" @click="tab='monitor'">返回工作台</button></div><div v-else class="run-list"><article v-for="run in runs" :key="run.id" class="run-item"><div class="run-item-heading"><div><strong>{{ snapshotName(run.snapshot_id) }}</strong><p>{{ dateTime(run.created_at) }} · {{ shortId(run.id) }} · {{ agentModeLabel(run.selection.mode) }}</p></div><span :class="['tag',statusClass(run.status)]">{{ statusName(run.status) }}</span></div><div class="run-metrics"><div><span>风险行社</span><b>{{ number(run.summary.case_count) }}</b></div><div><span>规则命中</span><b>{{ number(run.summary.triggered) }}</b></div><div><span>未触发</span><b>{{ number(run.summary.normal) }}</b></div><div><span>无法判断</span><b class="warning">{{ number(run.summary.insufficient) }}</b></div><div><span>待配置</span><b>{{ number(run.summary.unconfigured) }}</b></div><button class="button secondary small" @click="openRun(run)" :disabled="!!busy">查看结果 →</button></div></article></div></section></section>
+          <section v-if="tab==='runs'" class="runs-page"><div class="info-banner"><span class="info-mark">i</span><p>相同快照、规则版本与风险主题重复运行会复用结果。修改配置或主题后重新运行，形成新的执行记录。</p></div><section class="panel"><div class="panel-title"><h2>历史监测批次</h2><span class="subtle">{{ runs.length }} 次</span></div><div v-if="!runs.length" class="empty-state compact"><span class="empty-icon">◷</span><h3>还没有运行记录</h3><p>首次监测完成后，可在这里查看覆盖情况和风险事项。</p><button class="button secondary" @click="tab='monitor'">返回工作台</button></div><div v-else class="run-list"><article v-for="run in runs" :key="run.id" class="run-item"><div class="run-item-heading"><div><strong>{{ snapshotName(run.snapshot_id) }}</strong><p>{{ dateTime(run.created_at) }} · {{ shortId(run.id) }} · {{ agentModeLabel(run.selection.mode) }}</p></div><span :class="['tag',statusClass(run.status)]">{{ statusName(run.status) }}</span></div><div class="run-metrics"><div><span>风险行社</span><b>{{ number(run.summary.case_count) }}</b></div><div><span>规则命中</span><b>{{ number(run.summary.triggered) }}</b></div><div><span>未触发</span><b>{{ number(run.summary.normal) }}</b></div><div><span>无法判断</span><b class="warning">{{ number(run.summary.insufficient) }}</b></div><div><span>待配置</span><b>{{ number(run.summary.unconfigured) }}</b></div><button v-if="run.status==='failed'" class="button secondary small" @click="retryRun(run)" :disabled="!!busy">重试分析</button><button class="button secondary small" @click="openRun(run)" :disabled="!!busy">查看结果 →</button></div></article></div></section></section>
           <footer class="page-footer"><span>风险提示 · 行社级测试版</span><span>内置数据为合成样例，所有下发均为模拟。</span></footer>
         </div>
       </main>
@@ -359,8 +383,16 @@ createApp({
             <div v-if="error" class="alert error" role="alert"><strong>操作未完成</strong><span>{{ error }}</span><button @click="error=''" aria-label="关闭错误提示">×</button></div>
             <div v-if="drawerTab==='evidence'">
               <div class="detail-lead"><span class="tag amber">{{ selectedCase.evidence?.length || 0 }} 条触发依据</span><p>{{ selectedCase.headline }}</p></div>
-              <article v-for="evidence in selectedCase.evidence" :key="evidence.id" class="evidence-card"><header><span :class="['tag',evidence.rule_kind==='exists'?'amber':'blue']">{{ ruleKind(evidence.rule_kind) }}</span><small>{{ evidence.data_date }}</small></header><h3>{{ evidence.indicator_name }}</h3><div class="evidence-values"><strong>{{ evidence.value_display || String(evidence.value ?? '缺失') }}</strong><span v-if="evidence.rank!==null && evidence.rank!==undefined">全省第 <b>{{ evidence.rank }}</b> 名 <small>/ {{ evidence.population || 82 }} 家</small></span></div><p>{{ evidence.reason }}</p><footer><span>{{ evidence.rule_name }}</span><code>证据 {{ shortId(evidence.id) }}</code></footer></article>
-              <section v-if="selectedCase.analysis" class="analysis-section"><div class="panel-title"><h3>分析与核查建议</h3><span class="tag muted">{{ agentModeLabel(selectedCase.analysis.mode) }}</span></div><div v-if="selectedCase.analysis.facts?.length" class="analysis-group"><h4>已知事实</h4><ul><li v-for="fact in selectedCase.analysis.facts" :key="fact">{{ fact }}</li></ul></div><div v-if="selectedCase.analysis.hypotheses?.length" class="analysis-group"><h4>待核查解释</h4><ul><li v-for="hypothesis in selectedCase.analysis.hypotheses" :key="hypothesis">{{ hypothesis }}</li></ul></div><div v-if="selectedCase.analysis.checks?.length" class="analysis-group"><h4>建议核查</h4><ol><li v-for="check in selectedCase.analysis.checks" :key="check">{{ check }}</li></ol></div><div v-if="selectedCase.analysis.limitations?.length" class="detail-note"><p v-for="limitation in selectedCase.analysis.limitations" :key="limitation">{{ limitation }}</p></div></section>
+              <article v-for="evidence in selectedCase.evidence" :key="String(evidence.id)+evidence.rule_id" class="evidence-card"><header><span :class="['tag',evidence.rule_kind==='exists'?'amber':'blue']">{{ ruleKind(evidence.rule_kind) }}</span><small>{{ evidence.data_date }}</small></header><h3>{{ evidence.indicator_name }}</h3><div class="evidence-values"><strong>{{ evidence.value_display || String(evidence.value ?? '缺失') }}</strong><span v-if="evidence.rank!==null && evidence.rank!==undefined">全省第 <b>{{ evidence.rank }}</b> 名 <small>/ {{ evidence.population || 82 }} 家</small></span></div><p>{{ evidence.reason }}</p><footer><span>{{ evidence.rule_name }}</span><code>证据 {{ shortId(evidence.id) }}</code></footer></article>
+              <section v-if="selectedCase.analysis?.queried_evidence?.length" class="analysis-section">
+                <h3>主动补查证据</h3><p class="subtle">来自本任务固定范围内的 MCP 数据库查询，历史按实际期次列示。</p>
+                <div v-for="item in selectedCase.analysis.queried_evidence" :key="item.evidence_id" class="analysis-group">
+                  <strong>{{ item.indicator_name }} · {{ item.value_display }}</strong>
+                  <p>{{ item.data_date }} · {{ item.usable ? '可引用' : '数据不足，不可引用' }}</p>
+                  <small>证据 {{ item.evidence_id }} · 快照 {{ item.snapshot_id }}</small>
+                </div>
+              </section>
+              <section v-if="selectedCase.analysis" class="analysis-section"><div class="panel-title"><h3>分析与核查建议</h3><span class="tag muted">{{ agentModeLabel(selectedCase.analysis.mode) }}</span></div><div v-if="selectedCase.analysis.facts?.length" class="analysis-group"><h4>已知事实</h4><ul><li v-for="fact in selectedCase.analysis.facts" :key="fact">{{ fact }}</li></ul></div><div v-if="selectedCase.analysis.hypotheses?.length" class="analysis-group"><h4>待核查解释</h4><ul><li v-for="hypothesis in selectedCase.analysis.hypotheses" :key="hypothesis">{{ hypothesis }}</li></ul></div><div v-if="selectedCase.analysis.checks?.length" class="analysis-group"><h4>建议核查</h4><ol><li v-for="(check, index) in selectedCase.analysis.checks" :key="check">{{ check }}<small v-if="selectedCase.analysis.evidence_references?.checks[index]">引用：{{ selectedCase.analysis.evidence_references.checks[index].evidence_ids.join('、') }}</small></li></ol></div><div v-if="selectedCase.analysis.limitations?.length" class="detail-note"><p v-for="limitation in selectedCase.analysis.limitations" :key="limitation">{{ limitation }}</p></div></section>
             </div>
             <div v-if="drawerTab==='letter'">
               <div v-if="!letter" class="empty-state letter-empty"><div class="empty-orbit"><span>▤</span></div><h3>依据当前证据生成提示函</h3><p>使用通用测试模板。正式模板接入后，可沿用同一份证据与审核流程。</p><button class="button primary" @click="createDraft" :disabled="!!busy">{{ busy==='draft'?'正在生成…':'生成提示函草稿' }}</button></div>

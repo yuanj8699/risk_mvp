@@ -1,0 +1,260 @@
+{
+  "id": "d578ef98ae374bd7b9689e48bbfbd950",
+  "status": "completed",
+  "snapshot_id": "demo-2026-10-28",
+  "created_at": "2026-10-30T02:24:36.197366+00:00",
+  "summary": {
+    "evaluated": 407,
+    "triggered": 49,
+    "normal": 358,
+    "insufficient": 3,
+    "not_applicable": 0,
+    "unconfigured": 82,
+    "case_count": 38
+  },
+  "selection": {
+    "mode": "pi-demo",
+    "task_context": {
+      "run_id": "d578ef98ae374bd7b9689e48bbfbd950",
+      "topic": "批量验证信用风险与资金业务不良",
+      "snapshot_id": "demo-2026-10-28",
+      "as_of": "2026-10-28",
+      "rule_snapshot": [
+        {
+          "id": "exists_funds_npl_balance",
+          "name": "资金业务不良存在提醒",
+          "kind": "exists",
+          "indicator_id": "funds_npl_balance",
+          "enabled": true,
+          "params": {
+            "op": "!=0"
+          },
+          "version": 3,
+          "description": "有效值非零即提醒；缺失不等于零，排名不参与筛选。",
+          "needs_config": false
+        },
+        {
+          "id": "rank_deposit_growth",
+          "name": "各项存款余额（人行）比年初增幅排名提醒",
+          "kind": "rank",
+          "indicator_id": "deposit_growth",
+          "enabled": true,
+          "params": {
+            "cutoff": 72,
+            "scope": "province_societies",
+            "population": 82,
+            "rank_direction": "1_best"
+          },
+          "version": 3,
+          "description": "沿用附件中的排名≥72。测试排名为合成数据，正式适用指标待核验。",
+          "needs_config": false
+        },
+        {
+          "id": "rank_new_npl_ratio",
+          "name": "不良发生净生成率排名提醒",
+          "kind": "rank",
+          "indicator_id": "new_npl_ratio",
+          "enabled": true,
+          "params": {
+            "cutoff": 72,
+            "scope": "province_societies",
+            "population": 82,
+            "rank_direction": "1_best"
+          },
+          "version": 3,
+          "description": "沿用附件中的排名≥72。测试排名为合成数据，正式适用指标待核验。",
+          "needs_config": false
+        },
+        {
+          "id": "rank_npl_ratio",
+          "name": "五级不良贷款率排名提醒",
+          "kind": "rank",
+          "indicator_id": "npl_ratio",
+          "enabled": true,
+          "params": {
+            "cutoff": 72,
+            "scope": "province_societies",
+            "population": 82,
+            "rank_direction": "1_best"
+          },
+          "version": 1,
+          "description": "沿用附件中的排名≥72。测试排名为合成数据，正式适用指标待核验。",
+          "needs_config": false
+        },
+        {
+          "id": "rank_overdue_ratio",
+          "name": "逾期贷款率排名提醒",
+          "kind": "rank",
+          "indicator_id": "overdue_ratio",
+          "enabled": true,
+          "params": {
+            "cutoff": 72,
+            "scope": "province_societies",
+            "population": 82,
+            "rank_direction": "1_best"
+          },
+          "version": 3,
+          "description": "沿用附件中的排名≥72。测试排名为合成数据，正式适用指标待核验。",
+          "needs_config": false
+        },
+        {
+          "id": "ratio_npl_ratio",
+          "name": "五级不良贷款率占比提醒",
+          "kind": "ratio",
+          "indicator_id": "npl_ratio",
+          "enabled": true,
+          "params": {
+            "threshold": null,
+            "op": ">="
+          },
+          "version": 3,
+          "description": "未提供行内占比阈值；保持待配置，不产生默认异常判断。",
+          "needs_config": true
+        }
+      ],
+      "org_scope": [
+        "LS001",
+        "LS002",
+        "LS003",
+        "LS004",
+        "LS005",
+        "LS006",
+        "LS007",
+        "LS008",
+        "LS009",
+        "LS010",
+        "LS011",
+        "LS012",
+        "LS013",
+        "LS014",
+        "LS015",
+        "LS016",
+        "LS017",
+        "LS018",
+        "LS019",
+        "LS020",
+        "LS021",
+        "LS022",
+        "LS023",
+        "LS024",
+        "LS025",
+        "LS026",
+        "LS027",
+        "LS028",
+        "LS029",
+        "LS030",
+        "LS031",
+        "LS032",
+        "LS033",
+        "LS034",
+        "LS035",
+        "LS036",
+        "LS037",
+        "LS038",
+        "LS039",
+        "LS040",
+        "LS041",
+        "LS042",
+        "LS043",
+        "LS044",
+        "LS045",
+        "LS046",
+        "LS047",
+        "LS048",
+        "LS049",
+        "LS050",
+        "LS051",
+        "LS052",
+        "LS053",
+        "LS054",
+        "LS055",
+        "LS056",
+        "LS057",
+        "LS058",
+        "LS059",
+        "LS060",
+        "LS061",
+        "LS062",
+        "LS063",
+        "LS064",
+        "LS065",
+        "LS066",
+        "LS067",
+        "LS068",
+        "LS069",
+        "LS070",
+        "LS071",
+        "LS072",
+        "LS073",
+        "LS074",
+        "LS075",
+        "LS076",
+        "LS077",
+        "LS078",
+        "LS079",
+        "LS080",
+        "LS081",
+        "LS082"
+      ],
+      "history_snapshot_ids": [
+        "demo-2026-08-31",
+        "demo-2026-09-30",
+        "demo-2026-10-28"
+      ],
+      "source": "synthetic"
+    },
+    "indicator_ids": [
+      "deposit_growth",
+      "funds_npl_balance",
+      "funds_npl_change",
+      "funds_npl_ratio",
+      "new_npl_ratio",
+      "npl_ratio",
+      "overdue_ratio"
+    ],
+    "attempt": 1,
+    "topic": "批量验证信用风险与资金业务不良",
+    "reasons": [
+      "所有已启用且适用的规则均执行；主题筛选不删除必查指标。",
+      "主题涉及信用或资金风险，补充关联指标供核查。"
+    ],
+    "limitations": [
+      "Pi Agent工具循环演示模式：本地确定性适配器，无真实大模型调用。",
+      "小Q专用接口尚未对接；不会自动产生新的阈值。"
+    ],
+    "runtime": {
+      "framework": "pi-agent-core",
+      "version": "1.4.0",
+      "provider": "risk-local-demo",
+      "model": "risk-local-demo",
+      "requests": 2,
+      "tool_calls": 2,
+      "mode": "demo",
+      "llm_connected": false
+    },
+    "trace": [
+      {
+        "event": "request",
+        "request": 1
+      },
+      {
+        "event": "tool",
+        "transport": "local",
+        "tool": "read_indicator_catalog",
+        "status": "ok",
+        "arguments": {}
+      },
+      {
+        "event": "request",
+        "request": 2
+      },
+      {
+        "event": "tool",
+        "transport": "local",
+        "tool": "submit_selection",
+        "status": "ok",
+        "arguments": {}
+      }
+    ]
+  }
+}
