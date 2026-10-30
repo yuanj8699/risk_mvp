@@ -157,7 +157,10 @@ def test_stdio_mcp_reads_committed_context_and_recovers_from_bad_query(store):
         transport = StdioTransport(sys.executable, ["-m", "backend.mcp_server"], env=env, cwd=root, keep_alive=False)
         async with Client(transport) as client:
             names = {tool.name for tool in await client.list_tools()}
-            assert names == {"search_indicators", "query_metrics", "check_risks", "get_letter_template"}
+            assert {"search_indicators", "query_metrics", "check_risks", "get_letter_template"} <= names
+            # 新代码能力只对code任务开放；旧监测任务不能借新工具扩大权限。
+            rejected = await client.call_tool("write_task_file", {"path": "unexpected.py", "content": "print(1)"}, raise_on_error=False)
+            assert json.loads(rejected.content[0].text)["error"]["code"] == "SCOPE_VIOLATION"
             invalid = await client.call_tool("query_metrics", {"indicator_ids": ["unknown"]}, raise_on_error=False)
             assert invalid.is_error
             error = json.loads(invalid.content[0].text)

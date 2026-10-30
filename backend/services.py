@@ -11,7 +11,7 @@ from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
-from sqlalchemy import select
+from sqlalchemy import select, func, case
 from sqlalchemy.exc import SQLAlchemyError
 
 from .models import AnalysisRun, Indicator, Observation, Organization, Rule, SessionLocal, Snapshot
@@ -184,14 +184,12 @@ def _snapshots(db, context: dict) -> dict:
     return snapshots
 
 
-def query_metrics(context: dict, indicator_ids: list[str], org_ids: list[str] | None = None,
-                  history: bool = False, limit: int = 100, offset: int = 0) -> dict:
-    """截至日查最新实际期次；历史按真实日期去重，不把较早正常值替代较新缺失值。
+def iter_metrics(context: dict, indicator_ids: list[str], org_ids: list[str] | None = None,
+                 history: bool = True):
+    """按固定任务流式读取去重观测，供大数据导出复用；不会按分页反复加载全集。
 
-    同期重复观测优先本次快照，其余取最近快照。history的旧期次可用于趋势，另返回
-    current_issue说明它是否适合作为当前值；缺失/错误单位/质量不合格始终不可用。
+    去重/截至日范围在SQL中完成。连接在迭代结束时关闭，原始值仍为十进制字符串。
     """
-    _page(limit, offset)
     if not isinstance(indicator_ids, list) or not indicator_ids or len(indicator_ids) > 1000 or any(not isinstance(x, str) for x in indicator_ids):
         raise ServiceError("INVALID_ARGUMENT", "indicator_ids须为非空指标ID列表，最多1000项")
     if not isinstance(history, bool):
@@ -205,40 +203,54 @@ def query_metrics(context: dict, indicator_ids: list[str], org_ids: list[str] | 
         if unknown:
             raise ServiceError("UNKNOWN_INDICATOR", "未知指标ID：" + "、".join(sorted(unknown)))
         snapshots = _snapshots(db, context)
-        rows = db.scalars(select(Observation).where(
+        priority = (case((Observation.snapshot_id == context["snapshot_id"], 1), else_=0).desc(),
+                    Snapshot.data_date.desc(), Snapshot.created_at.desc(), Snapshot.id.desc(), Observation.id.desc())
+        ranked = select(Observation.id.label("id"), func.row_number().over(
+            partition_by=(Observation.org_id, Observation.indicator_id, Observation.data_date),
+            order_by=priority,
+        ).label("same_period")).join(Snapshot, Snapshot.id == Observation.snapshot_id).where(
             Observation.snapshot_id.in_(snapshots), Observation.org_id.in_(selected_orgs),
             Observation.indicator_id.in_(indicator_ids), Observation.data_date <= as_of,
-        )).all()
-        rows.sort(key=lambda o: (o.snapshot_id == context["snapshot_id"], snapshots[o.snapshot_id].data_date,
-                                snapshots[o.snapshot_id].created_at, o.snapshot_id, o.id), reverse=True)
-        unique = {}
-        for obs in rows:
-            unique.setdefault((obs.org_id, obs.indicator_id, obs.data_date), obs)
-        ordered = sorted(unique.values(), key=lambda o: (o.data_date, o.org_id, o.indicator_id))
-        if not history:
-            latest = {}
-            for obs in ordered:
-                latest[(obs.org_id, obs.indicator_id)] = obs
-            ordered = sorted(latest.values(), key=lambda o: (o.org_id, o.indicator_id))
-        evidence = []
-        for obs in ordered:
+        ).subquery()
+        unique_ids = select(ranked.c.id).where(ranked.c.same_period == 1)
+        if history:
+            query = select(Observation).where(Observation.id.in_(unique_ids)).order_by(
+                Observation.data_date, Observation.org_id, Observation.indicator_id)
+        else:
+            latest = select(Observation.id.label("id"), func.row_number().over(
+                partition_by=(Observation.org_id, Observation.indicator_id),
+                order_by=Observation.data_date.desc(),
+            ).label("latest_period")).where(Observation.id.in_(unique_ids)).subquery()
+            query = select(Observation).where(Observation.id.in_(
+                select(latest.c.id).where(latest.c.latest_period == 1)
+            )).order_by(Observation.org_id, Observation.indicator_id)
+        for obs in db.scalars(query.execution_options(yield_per=1000)):
             metric = metrics[obs.indicator_id]
             current_issue = observation_issue(obs, metric, SimpleNamespace(data_date=as_of))
             historical_issue = observation_issue(obs, metric, SimpleNamespace(data_date=obs.data_date))
             issue = historical_issue if history else current_issue
-            evidence.append({**observation_record(obs, metric), "source": context["source"],
-                             "usable": issue is None, "issue": issue, "current_issue": current_issue})
-        found = {(e["org_id"], e["indicator_id"]) for e in evidence}
-        missing = [{"org_id": org, "indicator_id": metric, "status": "missing"}
-                   for org in selected_orgs for metric in indicator_ids if (org, metric) not in found]
-        total = len(evidence)
-        return {
-            "evidence": evidence[offset:offset + limit], "total": total, "offset": offset, "limit": limit,
-            "next_offset": offset + limit if offset + limit < total else None,
-            "coverage": {"requested_pairs": len(selected_orgs) * len(indicator_ids), "found_pairs": len(found),
-                         "usable_records": sum(e["usable"] for e in evidence), "missing": missing},
-            "as_of": context["as_of"], "history": history, "source": context["source"],
-        }
+            yield {**observation_record(obs, metric), "source": context["source"],
+                   "usable": issue is None, "issue": issue, "current_issue": current_issue}
+
+
+def query_metrics(context: dict, indicator_ids: list[str], org_ids: list[str] | None = None,
+                  history: bool = False, limit: int = 100, offset: int = 0) -> dict:
+    """小结果供MCP直接查看；大数据导出使用iter_metrics流式落盘，不进入模型上下文。"""
+    _page(limit, offset)
+    evidence = list(iter_metrics(context, indicator_ids, org_ids, history))
+    selected_orgs = _scope(context, org_ids)
+    indicator_ids = sorted(set(indicator_ids))
+    found = {(e["org_id"], e["indicator_id"]) for e in evidence}
+    missing = [{"org_id": org, "indicator_id": metric, "status": "missing"}
+               for org in selected_orgs for metric in indicator_ids if (org, metric) not in found]
+    total = len(evidence)
+    return {
+        "evidence": evidence[offset:offset + limit], "total": total, "offset": offset, "limit": limit,
+        "next_offset": offset + limit if offset + limit < total else None,
+        "coverage": {"requested_pairs": len(selected_orgs) * len(indicator_ids), "found_pairs": len(found),
+                     "usable_records": sum(e["usable"] for e in evidence), "missing": missing},
+        "as_of": context["as_of"], "history": history, "source": context["source"],
+    }
 
 
 def check_risks(context: dict) -> dict:

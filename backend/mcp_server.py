@@ -61,5 +61,57 @@ def get_letter_template(version: str = "test-v1") -> dict:
     return _call(lambda _: services.get_letter_template(version))
 
 
+def _code_call(action):
+    """代码工具仅允许宿主创建的运行中自主分析任务，模型不能把监测任务升级。"""
+    from .models import AnalysisRun
+    from .task_workspace import WorkspaceError
+    try:
+        context = _context()
+        with services.read_session() as db:
+            run = db.get(AnalysisRun, context["run_id"])
+            if run.selection.get("kind") != "code" or run.status != "running":
+                raise services.ServiceError("SCOPE_VIOLATION", "任务未授权代码执行或已结束")
+        return action(context["run_id"])
+    except (services.ServiceError, WorkspaceError) as exc:
+        raise ToolError(json.dumps({"error": {"code": exc.code, "message": str(exc)}}, ensure_ascii=False)) from None
+
+
+@mcp.tool()
+def write_task_file(path: str, content: str) -> dict:
+    """在本任务工作区创建或修改UTF-8脚本/结果；不能写输入数据或宿主其他目录。"""
+    from .task_workspace import write_task_file as write
+    return _code_call(lambda run_id: write(run_id, path, content))
+
+
+@mcp.tool(annotations=READ_ONLY)
+def read_task_file(path: str, max_chars: int = 12000) -> dict:
+    """读取少量脚本、结果摘要或错误信息；大数据留在Parquet，不直接进入模型上下文。"""
+    from .task_workspace import read_task_file as read
+    if not 1 <= max_chars <= 32000:
+        raise ToolError('max_chars须为1至32000')
+    def action(run_id):
+        file = read(run_id, path)
+        return {**file, "content": file["content"][:max_chars], "truncated": len(file["content"]) > max_chars}
+    return _code_call(action)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_task_files() -> dict:
+    """列出本任务的脚本与输出文件摘要，不列出数据库、密钥或宿主执行记录。"""
+    from .task_workspace import list_task_files as files
+    return _code_call(lambda run_id: {"files": files(run_id)})
+
+
+@mcp.tool()
+def execute_python(script_path: str, timeout_seconds: int = 60) -> dict:
+    """在无网络Docker容器运行任务Python脚本，返回退出码、限长日志及产物清单。
+
+    脚本可用risk_client.export_metrics从宿主只读查询服务导出Parquet到/data，
+    再用pandas.read_parquet分析。非零退出码含实际错误，允许修正脚本后再次执行。
+    """
+    from .code_runner import execute_python as execute
+    return _code_call(lambda run_id: execute(run_id, script_path, timeout_seconds))
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio", show_banner=False)

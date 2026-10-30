@@ -1,12 +1,12 @@
 # 行社风险提示智能体 · 本地测试版 v0.1
 
-本项目将“数据导入—指标筛选—规则检测—证据查看—函件草稿—审核—模拟下发”连成一条可运行流程。机构范围按本次需求设置为11个地区、82家行社，并保留第4、5级机构。
+当前主方案是“风险主题 → Pi编写分析代码 → 隔离Python取数与计算 → 根据执行反馈修正 → 引用原始证据 → 生成分析函草稿”。一个Agent处理本次授权的整个机构范围，可以跨行社、跨期分析。已有规则监测、审核和模拟下发流程仍保留为独立入口。机构范围为11个地区、82家行社，并保留第4、5级机构。
 
-**这是本地测试工程。内置机构名称、地区归属、指标数值均为合成数据。Pi 已通过真实 stdio MCP 主动查询数据库中的快照，并将补查证据用于分析与函件。默认仍使用本地确定性逻辑模拟模型响应，不请求外部模型。小Q尚未接入；模拟下发只生成本地回执。**
+**这是本地测试工程。机构和数值均为合成数据。默认使用确定性模型响应替身；数据查询、Parquet导出及代码执行走实际组件。代码在Docker容器内运行，容器不能读取应用数据库、密钥或宿主其他目录。真实模型、小Q和真实下发尚未联调。**
 
 ## 1. 运行
 
-需要 Python 3.11 或更高版本，以及 Node.js 22.19 或更高版本。首次安装需要访问 Python 包源和 npm。前端页面及 Agent 的 JavaScript 已编译保留；日常运行不需要启动前端开发服务，但需要 Node.js 执行 Pi Agent。
+需要 Python 3.11 或更高版本、Node.js 22.19 或更高版本；自主代码分析还需要已启动的Docker Linux容器引擎。首次安装需要访问 Python 包源和 npm。前端页面及 Agent 的 JavaScript 已编译保留；日常运行不需要启动前端开发服务，但需要 Node.js 执行 Pi Agent。
 
 ### Windows
 
@@ -22,6 +22,16 @@ npm.cmd --prefix agent run build
 
 浏览器打开 <http://127.0.0.1:8000>。接口文档：<http://127.0.0.1:8000/docs>。
 
+首次使用自主代码分析前，构建固定依赖镜像：
+
+```powershell
+docker build -t risk-python-sandbox:0.1 sandbox
+```
+
+镜像构建需要获取基础镜像和依赖；分析任务运行时没有网络，也不能执行临时 `pip install`。Docker或镜像不可用会明确失败，不改到宿主执行Python。
+
+本轮已验证大数据生成、真实Parquet导出与证据核验；本机Docker执行环境仍未就绪，真实容器端到端和隔离检查尚未完成。不能将模型替身或宿主数据测试视为容器验收。
+
 ### macOS / Linux
 
 ```bash
@@ -34,7 +44,41 @@ npm --prefix agent run build
 
 默认使用项目 `data/` 目录下的 SQLite 数据库，首次启动自动创建表和合成数据。关闭服务后记录仍会保留。重新启动不会自动清空数据。Windows 启动脚本会检查 Python、Node、FastMCP 与 MCP SDK，并安装缺失的项目依赖。MCP 子进程由 Node 自动启动，使用后端当前的 Python 解释器，无需另外开启服务窗口。
 
-## 2. 先体验一条完整流程
+## 2. 自主代码分析
+
+创建任务时固定主题、数据快照、机构范围与历史快照集合。Pi可使用任务文件和隔离执行工具，Python脚本通过 `risk_client.export_metrics()` 请求授权指标数据，返回容器内Parquet路径及清单。完整记录留在文件中；模型读取代码输出和小型摘要，而不逐行接收整份数据。
+
+```powershell
+$body = @{
+    snapshot_id = 'demo-2026-10-28'
+    risk_topic = '比较各行社不良贷款率的跨期变化，并保留原始证据'
+    # 可选 org_scope = @('LS082')；省略时覆盖82家行社。
+} | ConvertTo-Json
+$run = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/code-runs' `
+    -ContentType 'application/json' -Body $body
+Invoke-RestMethod "http://127.0.0.1:8000/api/code-runs/$($run.id)"
+Invoke-RestMethod -Method Post "http://127.0.0.1:8000/api/code-runs/$($run.id)/draft"
+```
+
+`GET /api/code-runs/{id}` 返回任务状态、`result`、`executions`与`files`。每次执行保留退出码、标准输出、错误输出、导出清单和输出文件hash。最终 `findings` 必须引用本任务实际导出的原始观测ID；宿主核对观测、文件hash及成功执行记录后才标记完成。失败或仍在执行的任务不能生成草稿。自主分析草稿是带证据的分析综述，尚未接入原规则函件的审核与模拟下发状态机。
+
+默认demo会先写入含一个固定列名错误的脚本，真实执行得到 `KeyError` 后修改，再用pandas按行社和实际期次计算变化，输出 `result.json` 与行社汇总CSV。它演示的是“编写—执行—读取错误—修正—核验”链路，不能当成真实模型自主推理效果。
+
+### 大数据样例
+
+脚本只接受显式指定的独立SQLite文件，不会默认写入现有演示库：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/seed_large_demo.py --database data/large-demo.db
+$env:RISK_DATABASE_URL = 'sqlite:///C:/完整项目路径/data/large-demo.db'
+.\.venv\Scripts\python.exe run.py
+```
+
+启动后选择 `large-2026-10-28`。样例属于独立来源 `synthetic-large`，包含2024-11-30至2026-10-28的24期、82家行社、8项指标，共15744条原始观测。季度数据按真实季度末保留；同源同机构同指标同日期去重后，历史导出为12054条，不与原 `synthetic` 样例混用。导出值保留Decimal字符串和源观测ID，Parquet清单记录行数、来源、范围与hash。
+
+容器默认限制为1 CPU、512MiB内存、64进程、单次最长60秒。仅任务data目录只读挂载、work目录可写；宿主可信meta目录不挂载。标准输出/错误输出各最多32KiB，work总量监测上限为100个文件或64MiB。该监测不是独立磁盘配额；具体限制及边界见[架构说明](docs/architecture.md)。
+
+## 3. 规则监测流程（保留）
 
 1. 打开“风险监测”，选择最新合成数据批次。
 2. 输入一个风险主题，例如“关注信用风险与资金业务不良”，运行监测。
@@ -47,7 +91,7 @@ npm --prefix agent run build
 
 本轮留存的[单行社样例](docs/examples/issue-1-single-society.json)中，合成行社082的五级不良贷款率为3.15%、排名82/82，触发排名规则；Pi 经 MCP 查得逾期贷款率4.04%，以及8月、9月的不良贷款率3.07%、3.11%，分析引用了这些观测并生成[函件草稿](docs/examples/issue-1-letter.txt)。[默认规则批量样例](docs/examples/issue-1-batch.json)得到38家风险行社、49项触发、3项数据不足、82项占比待配置。这里验证的是实际 MCP、数据库查询与引用链路，模型响应仍为确定性替身。
 
-## 3. 本轮确认与暂定项
+## 4. 本轮确认与暂定项
 
 | 内容 | 本版处理 |
 | --- | --- |
@@ -66,7 +110,7 @@ npm --prefix agent run build
 
 “排名后72”仍有边界歧义，本版选择第72名及以后，依据为已上传提示词。它不表示“最后72家”。
 
-## 4. 数据导入
+## 5. 数据导入
 
 页面可下载空白CSV表头；Excel请整理成同样列名的单个工作表。不要直接上传指标名称目录：监测需要机构、日期和数值。
 
@@ -109,7 +153,7 @@ LS072,funds_npl_balance,2026-09-30,120000,元,,,,raw
 
 真实机构代码和指标目录的维护页面尚未实现。当前可使用合成代码测试，也可在首次初始化前修改 `backend/seed.py`；不要通过改名让合成数据看起来像真实经营数据。
 
-## 5. 数据库来源与DataWorks
+## 6. 数据库来源与DataWorks
 
 DataWorks是一套数据开发治理平台，可以连接不同计算引擎与数据源。后续要确认实际引擎、表/视图、字段、取数权限和网络可达性，不能把“有DataWorks权限”直接当成某种数据库连接协议。
 
@@ -130,7 +174,7 @@ $env:RISK_SOURCE_DATABASE_URL = 'sqlite:///C:/path/to/test_source.db'
 
 导入脚本的 `--date` 按来源记录的精确日期筛选；MCP 的“截至日最新值”查询则按指标实际日期取值，可以取到上期季度指标，两种日期语义不能互换。
 
-## 6. 代码结构与阅读顺序
+## 7. 代码结构与阅读顺序
 
 | 路径 | 职责 |
 | --- | --- |
@@ -140,6 +184,11 @@ $env:RISK_SOURCE_DATABASE_URL = 'sqlite:///C:/path/to/test_source.db'
 | backend/services.py | API/MCP共用的目录查询、固定上下文、指标取证、纯规则检测与模板读取 |
 | backend/mcp_server.py | FastMCP stdio服务；由宿主绑定任务与行社，只暴露4个只读业务工具 |
 | backend/analysis.py | Python 与 Pi Agent 的 JSON 进程调用边界、结果校验与超时处理 |
+| backend/code_tasks.py | 自主分析任务、执行证据核验与分析函草稿 |
+| backend/task_workspace.py | 任务文件、流式Parquet导出、宿主可信清单与原始证据复核 |
+| sandbox/ | 固定分析镜像与容器内risk_client取数接口 |
+| agent/src/code-exploration.ts | 全机构范围的代码编写、执行、纠错和结构化提交 |
+| scripts/seed_large_demo.py | 显式目标库的大规模合成样例，不改变默认演示库 |
 | agent/src/contracts.ts | Agent 请求、结果、证据和运行轨迹的 TypeScript 类型契约 |
 | agent/src/mcp-business.ts | 薄MCP客户端；绑定机构、调用业务工具、分类错误并关闭子进程 |
 | frontend/src/api.ts | 页面共用的 JSON 请求、文件上传及接口错误处理 |
@@ -165,7 +214,7 @@ npm.cmd --prefix agent test
 
 使用的是 GitHub 上原 `badlogic/pi-mono` 项目，现已迁移到 [earendil-works/pi](https://github.com/earendil-works/pi)。本版锁定 `@earendil-works/pi-agent-core` 与 `@earendil-works/pi-ai` 1.4.0、`@modelcontextprotocol/sdk` 1.32.2、Python `fastmcp` 4.1.4。
 
-默认 `RISK_PI_MODE=demo`。指标选择使用本地目录工具，事件分析通过 MCP 执行 `search_indicators`、`query_metrics`、`check_risks`、`get_letter_template` 等只读业务查询，再由本地 `submit_analysis` 提交结构化结果。模型响应由确定性逻辑生成，具体查询仍真实访问数据库。此模式无需 API 密钥，也不会发送指标数据到外部服务。
+默认 `RISK_PI_MODE=demo`。自主分析使用代码执行工具，替身演示一次真实脚本错误与修正；原规则监测的指标选择使用本地目录工具，事件分析通过 MCP 执行 `search_indicators`、`query_metrics`、`check_risks`、`get_letter_template` 等只读业务查询，再由本地 `submit_analysis` 提交结构化结果。模型响应由确定性逻辑生成，具体查询仍真实访问数据库。此模式无需 API 密钥，也不会发送指标数据到外部服务。
 
 真实模型模式通过以下环境变量配置，然后重新启动服务：
 
@@ -181,7 +230,7 @@ $env:RISK_PI_API_KEY = '<该服务的 API 密钥>'
 
 仅对获准的模型服务和数据启用 `model` 模式：该模式会将本次指标目录、风险证据及工具查询结果发送给所配置的模型。密钥通过环境变量提供，不写进代码或 Git。缺少配置、模型失败、结果不合格或执行超时会记录失败，不会悄悄改用演示结果。真实模型接口尚未联调，小Q需确认协议后接入。
 
-Python 保留取数、规则计算、数据库写入、函件审核和模拟下发。每次监测分别调用一次 Pi 指标选择和一次批量证据分析；Agent 不能修改排名、规则阈值或审批状态。
+Python 保留应用状态、取数授权、规则计算、函件审核和模拟下发。自主分析只调用一次覆盖整个范围的 `explore`；代码可计算派生分析结果，但不能修改源观测、已发布规则或审批状态。原规则监测仍分别调用一次Pi指标选择和一次批量证据分析。
 
 ### 固定上下文、失败重试与预算
 
@@ -191,10 +240,10 @@ Python 保留取数、规则计算、数据库写入、函件审核和模拟下�
 
 `RISK_PI_BATCH_TIMEOUT_MS` 默认120000毫秒，控制每次 Node 请求的任务预算；Python 使用同一值并额外留10秒退出清理。每个行社另受 `RISK_PI_TIMEOUT_MS`（默认30000毫秒）、`RISK_PI_MAX_REQUESTS`（默认10）、`RISK_PI_MAX_TOOLS`（默认12）限制。Node 在完成、失败或取消时关闭 MCP 会话；若超出清理余量，Python 终止该任务进程树。当前仍为同步任务，没有持久 worker；服务被强制终止后可能留下 `running` 记录，尚未实现自动恢复或租约接管。
 
-## 7. 尚未实现的部分
+## 8. 尚未实现的部分
 
 - 未连接真实DataWorks数据源、小Q模型接口或内部风险管理系统。
-- Pi 工具执行与离线演示已实现；真实模型模式已提供配置入口，但尚未完成真实服务联调。离线演示不代表模型推理效果。
+- Pi代码执行方案和规则监测均保留确定性演示模式；真实模型模式已有配置入口，尚未联调。演示成功不代表真实模型的分析质量。
 - 监测为本地小批次同步执行，已有运行去重、失败记录和显式重试；尚未实现持久worker、强制进程崩溃后的恢复、跨进程任务租约和自动调度。
 - 当前没有生产登录、机构数据权限或正式授权策略。默认仅绑定127.0.0.1，适用于本地测试。
 - 模拟下发验证版本与状态，不等于实现真实渠道的outbox、重试和送达确认。
@@ -202,7 +251,7 @@ Python 保留取数、规则计算、数据库写入、函件审核和模拟下�
 - 函件关键事实来自固定证据；人工编辑后的自由文本尚未实现自动语义核验。
 - 正式函件模板、占比阈值、比率口径、排名边界与规则组合需要业务确认。
 
-## 8. 接下来怎样补后端和数据库知识
+## 9. 接下来怎样补后端和数据库知识
 
 先读 `models.py`，理解为什么指标定义、指标事实、快照和函件修订分表；再读 `services.py` 的 `evaluate()` 与 `query_metrics()`，区分规则检测、缺数和截至日取证；最后读 `app.py` 的短事务与函件状态API，理解事务、乐观并发与幂等。
 

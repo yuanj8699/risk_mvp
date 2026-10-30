@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import signal
+import time
 from typing import Any, NotRequired, TypedDict, cast
 
 
@@ -79,6 +81,105 @@ class AnalysisError(RuntimeError):
     """Agent 配置、执行或协议失败；上层将其转换为可读的 API 错误。"""
 
 
+class ProcessCleanupError(AnalysisError):
+    """未确认后代进程停止；上层不得据此清除活动容器标志。"""
+
+
+@contextmanager
+def _owned_node_tree(process: subprocess.Popen):
+    """发送任务前建立进程树所有权；Node先退出时也回收其MCP后代，避免marker迟到写入。"""
+    job = kernel = None
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [("process_time", ctypes.c_longlong), ("job_time", ctypes.c_longlong),
+                        ("flags", wintypes.DWORD), ("min_working_set", ctypes.c_size_t),
+                        ("max_working_set", ctypes.c_size_t), ("active_limit", wintypes.DWORD),
+                        ("affinity", ctypes.c_size_t), ("priority", wintypes.DWORD), ("scheduling", wintypes.DWORD)]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in ("read_ops", "write_ops", "other_ops", "read_bytes", "write_bytes", "other_bytes")]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [("basic", BasicLimits), ("io", IoCounters),
+                        ("process_memory", ctypes.c_size_t), ("job_memory", ctypes.c_size_t),
+                        ("peak_process", ctypes.c_size_t), ("peak_job", ctypes.c_size_t)]
+
+        class Accounting(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_longlong) for name in ("user", "kernel", "period_user", "period_kernel")] + [
+                (name, wintypes.DWORD) for name in ("faults", "total", "active", "terminated")]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        job = kernel.CreateJobObjectW(None, None)
+        limits = ExtendedLimits()
+        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        attached = job and kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)) and kernel.AssignProcessToJobObject(job, process._handle)
+        if not attached:
+            if job:
+                kernel.CloseHandle(job)
+            process.kill()
+            process.wait()
+            raise AnalysisError("无法建立可回收的Node进程树，未发送分析任务。")
+
+    stopped = False
+
+    def stop():
+        nonlocal stopped
+        if stopped:
+            return
+        stopped = True
+        if os.name == "nt":
+            try:
+                if not kernel.TerminateJobObject(job, 1):
+                    raise ProcessCleanupError("无法终止Node任务进程树，请检查宿主进程。")
+                deadline = time.monotonic() + 3
+                while True:
+                    accounting = Accounting()
+                    if not kernel.QueryInformationJobObject(job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
+                        raise ProcessCleanupError("无法确认Node任务进程树已回收。")
+                    if accounting.active == 0:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise ProcessCleanupError("Node任务进程树回收超时。")
+                    time.sleep(0.02)
+            finally:
+                kernel.CloseHandle(job)
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            except OSError as exc:
+                raise ProcessCleanupError("无法终止Node任务进程组。") from exc
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired as exc:
+                raise ProcessCleanupError("Node任务主进程尚未退出。") from exc
+            deadline = time.monotonic() + 3
+            while True:
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    break
+                if time.monotonic() >= deadline:
+                    raise ProcessCleanupError("Node任务进程组尚未确认退出。")
+                time.sleep(0.02)
+
+    try:
+        yield stop
+    finally:
+        stop()
+
+
 class PiAnalysisProvider:
     """通过短生命周期 Node 进程调用 Pi，实例自身不保存会话或业务状态。"""
 
@@ -100,7 +201,7 @@ class PiAnalysisProvider:
             "base_url": os.getenv("RISK_PI_BASE_URL", ""),
         }
 
-    def _request(self, payload: JsonObject) -> JsonObject:
+    def _request(self, payload: JsonObject, budget_ms: int | None = None) -> JsonObject:
         """一次进程交换一个 JSON 请求/结果；失败保留根因并向上抛出。"""
         node = shutil.which("node")
         if not node or not RUNNER_PATH.is_file():
@@ -108,7 +209,7 @@ class PiAnalysisProvider:
                 "Pi Agent 未安装：需要 Node.js 22.19+，"
                 "请在 agent 目录执行 npm ci --ignore-scripts 和 npm run build。"
             )
-        budget_ms = task_budget_ms()
+        budget_ms = task_budget_ms() if budget_ms is None else budget_ms
         payload = {**payload, "budget_ms": budget_ms}
         env = {**os.environ, "RISK_PYTHON_EXECUTABLE": sys.executable,
                "RISK_PROJECT_ROOT": str(ROOT), "RISK_PI_BATCH_TIMEOUT_MS": str(budget_ms)}
@@ -119,19 +220,23 @@ class PiAnalysisProvider:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 start_new_session=os.name != "nt",
             ) as process:
-                try:
-                    stdout, stderr = process.communicate(json.dumps(payload, ensure_ascii=False),
-                                                         timeout=budget_ms / 1000 + PROCESS_CLEANUP_SECONDS)
-                except subprocess.TimeoutExpired as exc:
-                    # Node的finally先关闭MCP；若整个进程卡住，父端终止本次子进程树。
+                def stop_standard_tree():
                     if os.name == "nt":
                         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                     else:
                         os.killpg(process.pid, signal.SIGKILL)
-                    process.communicate()
-                    raise AnalysisError("Pi任务预算及退出余量已耗尽，本次进程树已终止；可显式重试失败任务。") from exc
-                returncode = process.returncode
+                # 只有explore可启动代码容器；原指标选择/事件分析保持原有进程契约。
+                ownership = _owned_node_tree(process) if payload.get("operation") == "explore" else nullcontext(stop_standard_tree)
+                with ownership as stop_tree:
+                    try:
+                        stdout, stderr = process.communicate(json.dumps(payload, ensure_ascii=False),
+                                                             timeout=budget_ms / 1000 + PROCESS_CLEANUP_SECONDS)
+                    except subprocess.TimeoutExpired as exc:
+                        stop_tree()
+                        process.communicate()
+                        raise AnalysisError("Pi任务预算及退出余量已耗尽，本次进程树已终止；可显式重试失败任务。") from exc
+                    returncode = process.returncode
         except OSError as exc:
             raise AnalysisError(f"Pi Agent 进程无法启动：{exc.strerror}") from exc
 
@@ -186,6 +291,28 @@ class PiAnalysisProvider:
             ):
                 raise AnalysisError("Pi Agent 分析结果格式错误。")
         return cast(dict[str, CaseAnalysis], analyses)
+
+    def explore(self, context: JsonObject) -> JsonObject:
+        """整个任务范围的一次代码探索；只返回摘要、引用与执行产物身份。"""
+        try:
+            budget = int(os.getenv("RISK_CODE_BUDGET_MS", "300000"))
+        except ValueError as exc:
+            raise AnalysisError("RISK_CODE_BUDGET_MS必须是整数") from exc
+        if not 1 <= budget <= 600000:
+            raise AnalysisError("RISK_CODE_BUDGET_MS必须在1至600000之间")
+        reaped = True
+        try:
+            return self._request({"operation": "explore", "context": context}, budget_ms=budget)
+        except ProcessCleanupError:
+            reaped = False
+            raise
+        finally:
+            # _request先回收Node/MCP，再由仍存活的API宿主清理daemon托管的本任务容器。
+            from .code_runner import cleanup_task_container
+            if reaped:
+                cleanup = cleanup_task_container(context["run_id"])
+                if not cleanup["removed"]:
+                    raise AnalysisError("隔离执行未确认安全结束：" + cleanup["message"])
 
 
 provider = PiAnalysisProvider()

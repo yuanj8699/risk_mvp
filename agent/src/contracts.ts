@@ -66,7 +66,17 @@ export type ExplainBatchRequest = {
   cases: RiskCaseInput[];
 };
 
-export type RiskAgentRequest = SelectRequest | ExplainBatchRequest;
+/** 一次探索覆盖整个冻结机构范围，数据在隔离Python中计算，不预载进模型上下文。 */
+export type ExploreRequest = { operation: "explore"; context: TaskContext; budget_ms: number };
+export type ExplorationFinding = { org_id: string; statement: string; evidence_ids: string[] };
+export type ExplorationSubmission = { summary: string; findings: ExplorationFinding[]; execution_ids: string[]; result_file: string };
+export type ExploreResult = ExplorationSubmission & {
+  mode: ResultMode;
+  trace: AgentTrace[];
+  runtime: RuntimeInfo;
+};
+
+export type RiskAgentRequest = SelectRequest | ExplainBatchRequest | ExploreRequest;
 
 /** 建议须引用本事件证据；引用有效不代表原因已经查实。 */
 export type Proposal = { text: string; evidence_ids: string[] };
@@ -81,6 +91,8 @@ export type AgentTrace = {
   request?: number;
   arguments?: Record<string, unknown>;
   evidence_ids?: string[];
+  execution_id?: string;
+  exit_code?: number;
 };
 
 export type RuntimeInfo = {
@@ -112,7 +124,7 @@ export type CaseAnalysis = ResultMetadata & {
 };
 
 export type ExplainBatchResult = { analyses: Record<string, CaseAnalysis> };
-export type RiskAgentResult = SelectResult | ExplainBatchResult;
+export type RiskAgentResult = SelectResult | ExplainBatchResult | ExploreResult;
 
 /** CLI失败时返回此结构并以退出码1结束，不输出原始模型响应或认证信息。 */
 export type AgentErrorResponse = { error: { code: string; message: string } };
