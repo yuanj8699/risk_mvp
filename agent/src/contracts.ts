@@ -19,17 +19,37 @@ export type Evidence = {
   [key: string]: unknown;
 };
 
-export type SupportingEvidence = {
+/** 后端冻结的任务范围；MCP服务还会按run_id从数据库加载并再次约束范围。 */
+export type TaskContext = {
+  run_id: string;
+  topic: string;
+  snapshot_id: string;
+  as_of: string;
+  rule_snapshot: Record<string, unknown>[];
+  org_scope: string[];
+  history_snapshot_ids: string[];
+  source: string;
+};
+
+/** 只保存MCP真正查到的观测值；缺失/过期结果可展示缺口，但不能进入引用池。 */
+export type QueriedEvidence = {
+  id: string;
+  evidence_id: string;
+  org_id: string;
   indicator_id: string;
+  indicator_name: string;
   value: string | number | null;
   value_display: string;
+  data_date: string;
+  snapshot_id: string;
+  quality_status: string;
+  usable?: boolean;
   [key: string]: unknown;
 };
 
 export type RiskCaseInput = {
   case_key: string;
   evidence: Evidence[];
-  supporting: SupportingEvidence[];
 };
 
 export type SelectRequest = {
@@ -41,6 +61,8 @@ export type SelectRequest = {
 
 export type ExplainBatchRequest = {
   operation: "explain_batch";
+  context: TaskContext;
+  budget_ms: number;
   cases: RiskCaseInput[];
 };
 
@@ -53,9 +75,12 @@ export type SelectionProposal = { indicator_ids: string[]; reasons: string[] };
 
 export type AgentTrace = {
   event: "request" | "tool";
+  transport?: "mcp" | "local";
   tool?: string;
   status?: "ok" | "error";
   request?: number;
+  arguments?: Record<string, unknown>;
+  evidence_ids?: string[];
 };
 
 export type RuntimeInfo = {
@@ -83,6 +108,7 @@ export type CaseAnalysis = ResultMetadata & {
   hypotheses: string[];
   checks: string[];
   evidence_references: AnalysisProposal;
+  queried_evidence: QueriedEvidence[];
 };
 
 export type ExplainBatchResult = { analyses: Record<string, CaseAnalysis> };

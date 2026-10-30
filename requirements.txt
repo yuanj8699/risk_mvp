@@ -6,3 +6,4 @@ pydantic==2.14.1
 httpx==0.28.1
 python-multipart==0.0.32
 openpyxl==3.1.5
+fastmcp==4.1.4
