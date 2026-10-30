@@ -28,6 +28,11 @@ from .analysis import AnalysisError, provider
 from .models import (ROOT, Base, engine, SessionLocal, Organization, Indicator, Snapshot, Observation,
                      Rule, AnalysisRun, RiskCase, Letter, LetterHistory, AuditLog, uid, now)
 from .seed import seed_database
+from .services import (
+    number, display, observation_issue, evaluate, evidence_record,
+    search_indicators, query_metrics, check_risks, get_letter_template,
+    freeze_context, load_task_context,
+)
 
 ModelType = TypeVar("ModelType", bound=Base)
 
@@ -40,26 +45,6 @@ def hash_json(value: Any) -> str:
 def timestamp(value: datetime) -> str:
     # SQLite读取的时间可能不带时区；数据库中的时间统一按UTC写入。
     return value.replace(tzinfo=timezone.utc).isoformat() if value.tzinfo is None else value.isoformat()
-
-
-def number(value: Decimal | None) -> str | None:
-    """API以十进制字符串传递数值，避免经过浮点数丢失精度。"""
-    if value is None:
-        return None
-    text = format(Decimal(str(value)), "f")
-    return text.rstrip("0").rstrip(".") if "." in text else text
-
-
-def display(value: Decimal | None, unit: str) -> str:
-    """生成展示文本；原始数值仍由number()保留，不用于反向计算。"""
-    if value is None:
-        return "缺失"
-    val = Decimal(str(value))
-    if unit == "%":
-        return f"{val:.4f}".rstrip("0").rstrip(".") + "%"
-    if unit == "元" and abs(val) >= Decimal("10000"):
-        return f"{val / Decimal('10000'):,.2f}万元"
-    return f"{val:,.2f}{unit}"
 
 
 # 序列化函数限定公开字段，避免直接暴露ORM对象及内部状态。
@@ -134,6 +119,8 @@ class Payload(BaseModel):
 class RunPayload(Payload):
     snapshot_id: str
     risk_topic: str = Field(default="", max_length=500)
+    org_scope: list[str] | None = None
+    retry: bool = False
 
 
 class RulePayload(Payload):
@@ -186,9 +173,19 @@ def organizations():
 
 @app.get("/api/indicators")
 def indicators(q: str = ""):
-    with SessionLocal() as db:
-        items = db.scalars(select(Indicator).order_by(Indicator.id)).all()
-        return [metric_dict(i) for i in items if not q or q.lower() in (i.id + i.name + i.description).lower()]
+    return search_indicators(q, limit=1000)["items"]
+
+
+@app.get("/api/runs/{run_id}/metrics")
+def task_metrics(run_id: str, indicator_ids: str, org_id: str | None = None,
+                 history: bool = False, limit: int = 100, offset: int = 0):
+    try:
+        context = load_task_context(run_id, org_id)
+        return query_metrics(context, indicator_ids.split(","),
+                             org_ids=[org_id] if org_id else None,
+                             history=history, limit=limit, offset=offset)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/api/rules")
@@ -232,127 +229,108 @@ def patch_rule(rule_id: str, data: RulePayload):
         return rule_dict(rule)
 
 
-def observation_issue(
-    obs: Observation | None, metric: Indicator, snapshot: Snapshot,
-) -> str | None:
-    """返回数据不可用的原因；规则检测和辅助取证共用同一口径。"""
-    if obs is None or obs.value is None or obs.quality_status != "valid":
-        return "指标数据缺失或质量状态不合格"
-    lag = (snapshot.data_date - obs.data_date).days
-    allowed_lag = 120 if metric.frequency == "季" else 7
-    if lag < 0 or lag > allowed_lag:
-        return f"数据期次不满足测试新鲜度策略（{metric.frequency}频指标允许滞后{allowed_lag}天）"
-    if obs.unit != metric.unit:
-        return "指标单位与目录不一致"
-    return None
-
-
-def evaluate(
-    rule: Rule, obs: Observation | None, metric: Indicator, snapshot: Snapshot,
-) -> tuple[str, str]:
-    """执行一条规则，返回(状态, 原因)；只读取数据，不重排或写库。"""
-    if rule.kind == "ratio" and rule.params.get("threshold") is None:
-        return "unconfigured", "占比阈值尚未配置"
-    issue = observation_issue(obs, metric, snapshot)
-    if issue:
-        return "insufficient", issue
-    if rule.kind == "rank":
-        if obs.rank is None or obs.population != 82 or obs.rank_scope != "province_societies" or not 1 <= obs.rank <= 82:
-            return "insufficient", "缺少有效的全省82家行社同口径排名"
-        cutoff = rule.params["cutoff"]
-        hit = obs.rank >= cutoff
-        return ("triggered" if hit else "normal"), f"全省排名{obs.rank}/{obs.population}，{'达到' if hit else '未达到'}排名≥{cutoff}的测试规则"
-    if rule.kind == "ratio":
-        threshold = Decimal(str(rule.params["threshold"]))
-        hit = obs.value >= threshold if rule.params["op"] == ">=" else obs.value > threshold
-        return ("triggered" if hit else "normal"), f"{'满足' if hit else '未满足'}占比{rule.params['op']}{number(threshold)}%的测试规则"
-    hit = obs.value != 0
-    return ("triggered" if hit else "normal"), "有效值非零，触发存在提醒；不据此认定风险上升" if hit else "有效值为零，未触发存在提醒"
-
-
-def evidence_record(rule: Rule, obs: Observation, metric: Indicator, reason: str) -> dict:
-    """复制当期值及规则版本，后续配置变化不会改变已保存的证据。"""
-    return {"id": uid(), "indicator_id": metric.id, "indicator_name": metric.name, "value": number(obs.value),
-            "value_display": display(obs.value, obs.unit), "unit": obs.unit, "rank": obs.rank, "population": obs.population,
-            "data_date": obs.data_date.isoformat(), "rule_id": rule.id, "rule_name": rule.name, "rule_kind": rule.kind,
-            "rule_version": rule.version, "reason": reason, "quality_status": "valid", "source_record_id": obs.id}
-
-
 @app.post("/api/runs")
 def create_run(data: RunPayload):
-    """在同一事务中保存检查明细、Pi分析及风险事项；失败整批回滚。"""
+    """先提交任务与检测证据，再在事务外执行Pi；失败保留记录，显式重试。"""
     with SessionLocal() as db:
         snapshot = get_or_404(db, Snapshot, data.snapshot_id)
         if snapshot.status != "ready":
             raise HTTPException(409, "数据快照尚未就绪")
-        active_rules = db.scalars(select(Rule).where(Rule.enabled == True).order_by(Rule.id)).all()
-        all_rules = db.scalars(select(Rule).order_by(Rule.id)).all()
-        frozen_rules = [rule_dict(r) for r in all_rules]
-        normalized_topic = " ".join(data.risk_topic.split())
-        # 同一输入复用结果；规则版本或Agent配置变化后形成独立记录。
-        key = hash_json({"snapshot": snapshot.id, "rules": frozen_rules, "risk_topic": normalized_topic,
-                         "agent": provider.cache_identity})
-        existing = db.scalar(select(AnalysisRun).where(AnalysisRun.run_key == key))
-        if existing:
-            return run_dict(existing)
-        metrics = {i.id: i for i in db.scalars(select(Indicator))}
-        orgs = db.scalars(select(Organization).where(Organization.level == 3).order_by(Organization.code)).all()
-        region_names = {o.id: o.name for o in db.scalars(select(Organization).where(Organization.level == 2))}
-        observations = {(o.org_id, o.indicator_id): o for o in db.scalars(select(Observation).where(Observation.snapshot_id == snapshot.id))}
-        selection = provider.select(normalized_topic, [metric_dict(m) for m in metrics.values()], [r.indicator_id for r in active_rules])
-        counts = {k: 0 for k in ("evaluated", "triggered", "normal", "insufficient", "not_applicable", "unconfigured", "case_count")}
-        # 与ORM的JSON字段分开持有计数，最终赋新字典才能正确触发持久化。
-        run = AnalysisRun(run_key=key, snapshot_id=snapshot.id, status="running", summary=dict(counts), selection=selection, rule_snapshot=frozen_rules)
-        db.add(run)
+        available_orgs = set(db.scalars(select(Organization.id).where(Organization.level == 3)))
+        scope = sorted(set(data.org_scope) if data.org_scope is not None else available_orgs)
+        if not scope or not set(scope) <= available_orgs:
+            raise HTTPException(422, "监测机构范围必须为目录内的行社")
+        frozen_rules = [rule_dict(r) for r in db.scalars(select(Rule).order_by(Rule.id))]
+        topic = " ".join(data.risk_topic.split())
+        key = hash_json({"snapshot": snapshot.id, "rules": frozen_rules, "risk_topic": topic,
+                         "org_scope": scope, "agent": provider.cache_identity})
+        run = db.scalar(select(AnalysisRun).where(AnalysisRun.run_key == key))
+        if run:
+            if run.status != "failed" or not data.retry:
+                return run_dict(run)
+            # 条件更新只允许一个重试者取走failed状态，其他请求复用该任务。
+            claimed = db.execute(update(AnalysisRun).where(
+                AnalysisRun.id == run.id, AnalysisRun.status == "failed",
+            ).values(status="running"))
+            if claimed.rowcount != 1:
+                db.rollback()
+                db.refresh(run)
+                return run_dict(run)
+            context = run.selection["task_context"]
+            run.selection = {**run.selection, "error": None,
+                             "attempt": run.selection.get("attempt", 1) + 1}
+        else:
+            run_id = uid()
+            context = freeze_context(db, run_id, snapshot, topic, frozen_rules, scope)
+            run = AnalysisRun(id=run_id, run_key=key, snapshot_id=snapshot.id, status="running",
+                              summary={}, rule_snapshot=frozen_rules,
+                              selection={"mode": provider.mode, "task_context": context,
+                                         "indicator_ids": [], "attempt": 1})
+            db.add(run)
         try:
-            db.flush()
+            db.commit()
         except IntegrityError:
             db.rollback()
             winner = db.scalar(select(AnalysisRun).where(AnalysisRun.run_key == key))
             if winner:
                 return run_dict(winner)
-            raise HTTPException(409, "同批次正在执行，请稍后重试")
-        checks = []
-        pending_cases = []
-        for org in orgs:
-            evidence = []
-            for rule in active_rules:
-                obs, metric = observations.get((org.id, rule.indicator_id)), metrics[rule.indicator_id]
-                status, reason = evaluate(rule, obs, metric, snapshot)
-                counts[status] += 1
-                if status in {"normal", "triggered"}:
-                    counts["evaluated"] += 1
-                checks.append({"org_id": org.id, "org_name": org.name, "rule_id": rule.id, "indicator_id": metric.id, "status": status, "reason": reason})
-                if status == "triggered":
-                    evidence.append(evidence_record(rule, obs, metric, reason))
-            if not evidence:
-                continue
-            supporting = []
-            for metric_id in selection["indicator_ids"]:
-                obs = observations.get((org.id, metric_id))
-                metric = metrics[metric_id]
-                if observation_issue(obs, metric, snapshot) is None:
-                    supporting.append({"indicator_id": metric_id, "value": number(obs.value), "value_display": display(obs.value, obs.unit), "data_date": obs.data_date.isoformat()})
-            pending_cases.append({"case_key": org.id, "evidence": evidence, "supporting": supporting})
-        # 按批次启动一次Node进程，避免为每家行社重复加载Pi。
-        analyses = provider.explain_batch(pending_cases)
-        org_by_id = {org.id: org for org in orgs}
-        for item in pending_cases:
-            org = org_by_id[item["case_key"]]
-            evidence = item["evidence"]
-            analysis = analyses[item["case_key"]]
-            if not snapshot.is_demo:
-                analysis["limitations"] = [x for x in analysis["limitations"] if "内置数值" not in x]
-                analysis["limitations"].insert(0, "本批次为用户导入数据，仍仅用于本地测试，未核验生产口径。")
-            types = sorted({{"rank": "排名提醒", "ratio": "占比提醒", "exists": "存在提醒"}[e["rule_kind"]] for e in evidence})
-            db.add(RiskCase(run_id=run.id, org_id=org.id, org_name=org.name, region_name=region_names.get(org.region_id, "未分配地区"),
-                            data_date=snapshot.data_date, risk_types=types, status="open",
-                            headline=f"{len(evidence)}项规则触发 · " + "、".join(types), evidence=evidence, analysis=analysis))
-            counts["case_count"] += 1
-        run.summary, run.checks, run.status = dict(counts), checks, "completed"
-        audit(db, "analysis_completed", run.id, {"snapshot_id": snapshot.id, "rule_versions": {r.id: r.version for r in active_rules}})
-        db.commit()
-        return run_dict(run)
+            raise
+        run_id = run.id
+        is_demo = snapshot.is_demo
+
+    # 此处无存活的写事务；MCP使用另一个连接也能读取任务及固定上下文。
+    try:
+        detection = check_risks(context)
+        with SessionLocal() as db:
+            run = db.get(AnalysisRun, run_id)
+            run.summary, run.checks = detection["summary"], detection["checks"]
+            for item in detection["cases"]:
+                case = db.scalar(select(RiskCase).where(
+                    RiskCase.run_id == run_id, RiskCase.org_id == item["case_key"],
+                ))
+                if case is None:
+                    types = sorted({{"rank": "排名提醒", "ratio": "占比提醒", "exists": "存在提醒"}[e["rule_kind"]]
+                                    for e in item["evidence"]})
+                    case = RiskCase(run_id=run_id, org_id=item["case_key"], org_name=item["org_name"],
+                                    region_name=item["region_name"], data_date=date.fromisoformat(context["as_of"]),
+                                    risk_types=types, status="open", evidence=item["evidence"],
+                                    headline=f"{len(item['evidence'])}项规则触发 · " + "、".join(types))
+                    db.add(case)
+                case.analysis = {"mode": provider.mode, "status": "pending", "facts": [],
+                                 "hypotheses": [], "checks": [], "limitations": ["分析尚未完成，暂不可拟函。"]}
+            db.commit()
+        catalog = search_indicators(limit=1000)["items"]
+        mandatory = [r["indicator_id"] for r in context["rule_snapshot"] if r["enabled"]]
+        selection = provider.select(context["topic"], catalog, mandatory)
+        with SessionLocal() as db:
+            run = db.get(AnalysisRun, run_id)
+            run.selection = {**run.selection, **selection}
+            db.commit()
+        cases = [{"case_key": item["case_key"], "evidence": item["evidence"]}
+                 for item in detection["cases"]]
+        analyses = provider.explain_batch(cases, context)
+        with SessionLocal() as db:
+            run = db.get(AnalysisRun, run_id)
+            for case in db.scalars(select(RiskCase).where(RiskCase.run_id == run_id)):
+                analysis = analyses[case.org_id]
+                if not is_demo:
+                    analysis["limitations"] = [x for x in analysis["limitations"] if "内置数值" not in x]
+                    analysis["limitations"].insert(0, "本批次为用户导入数据，未核验生产口径。")
+                case.analysis = {**analysis, "status": "completed"}
+            run.status = "completed"
+            audit(db, "analysis_completed", run_id, {"snapshot_id": context["snapshot_id"]})
+            db.commit()
+            return run_dict(run)
+    except Exception as exc:
+        # 在业务边界保存失败状态；不把供应商响应、连接串等原始异常显示给用户。
+        message = str(exc) if isinstance(exc, (AnalysisError, ValueError)) else "业务执行失败，请检查服务日志。"
+        with SessionLocal() as db:
+            run = db.get(AnalysisRun, run_id)
+            run.status = "failed"
+            run.selection = {**run.selection, "error": message}
+            audit(db, "analysis_failed", run_id, {"error_type": type(exc).__name__})
+            db.commit()
+        raise HTTPException(502, {"run_id": run_id, "message": message}) from exc
 
 
 @app.get("/api/runs")
@@ -385,14 +363,22 @@ def get_case(case_id: str):
 
 
 def render_letter(case: RiskCase) -> str:
-    """数值正文直接来自固定证据；Agent只补充核查建议。"""
-    facts = "\n".join(f"{i}. {e['indicator_name']}：{e['value_display']}，数据日期{e['data_date']}。{e['reason']}。" for i, e in enumerate(case.evidence, 1))
+    """触发事实和补查事实都取自留存证据，模型只能贡献有引用的核查建议。"""
+    facts = "\n".join(f"{i}. {e['indicator_name']}：{e['value_display']}，数据日期{e['data_date']}。{e['reason']}。"
+                      for i, e in enumerate(case.evidence, 1))
     checks = "\n".join(f"{i}. {text}" for i, text in enumerate(case.analysis.get("checks", []), 1))
-    return (f"风险提示函（本地测试通用模板）\n\n致：{case.org_name}\n\n"
-            f"根据截至{case.data_date.isoformat()}纳入本批次的数据，以下指标触发当前测试规则：\n\n{facts}\n\n"
-            f"请核查以下事项：\n{checks}\n\n"
-            "上述内容为指标事实与规则筛选结果，具体原因和责任尚待核查。请按正式业务流程补充核查说明。\n\n"
-            "模板状态：行内正式模板尚未提供。\n环境：本地测试；模拟下发不构成真实发函。")
+    refs = case.analysis.get("evidence_references", {})
+    cited = {key for items in refs.values() for item in items for key in item.get("evidence_ids", [])}
+    queried = [e for e in case.analysis.get("queried_evidence", []) if e["evidence_id"] in cited]
+    supplementary = ""
+    if queried:
+        supplementary = "\n补充查询证据：\n" + "\n".join(
+            f"{e['indicator_name']}：{e['value_display']}，数据日期{e['data_date']}，证据{e['evidence_id']}。"
+            for e in queried) + "\n"
+    return get_letter_template()["template"].format(
+        org_name=case.org_name, data_date=case.data_date.isoformat(),
+        facts=facts, checks=checks, supplementary=supplementary,
+    )
 
 
 @app.post("/api/cases/{case_id}/draft")
@@ -403,7 +389,10 @@ def draft_letter(case_id: str):
         existing = db.scalar(select(Letter).where(Letter.case_id == case_id))
         if existing:
             return letter_dict(existing)
-        letter = Letter(case_id=case.id, content=render_letter(case), evidence_hash=hash_json(case.evidence), revision=1, status="draft")
+        if get_or_404(db, AnalysisRun, case.run_id).status != "completed":
+            raise HTTPException(409, "任务分析尚未完成，不能生成函件")
+        evidence_hash = hash_json({"triggered": case.evidence, "queried": case.analysis.get("queried_evidence", [])})
+        letter = Letter(case_id=case.id, content=render_letter(case), evidence_hash=evidence_hash, revision=1, status="draft")
         db.add(letter)
         try:
             db.flush()
