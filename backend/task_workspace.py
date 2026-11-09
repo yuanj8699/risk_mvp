@@ -217,7 +217,7 @@ def _arrow_schema() -> pa.Schema:
 
 
 def export_dataset(context: dict, indicator_ids: list[str], org_ids: list[str] | None = None,
-                   history: bool = True, *, cancelled: Callable[[], bool] | None = None) -> dict:
+                   history: bool = True, *, cancelled: Callable[[], bool] | None = None, budget=None) -> dict:
     """一次流式查询完整导出；只向代码返回文件路径与摘要，不回传大数组。
 
     context须来自宿主已提交任务。meta中的清单和证据索引不挂载给容器，供后续引用复核。
@@ -252,6 +252,8 @@ def export_dataset(context: dict, indicator_ids: list[str], org_ids: list[str] |
         if not unchanged:
             raise WorkspaceError("EVIDENCE_CHANGED", "已有任务数据集校验失败，不能复用")
         return {**manifest, "reused": True}
+    if budget:
+        budget.charge_export(rows=0, bytes=0)
     # 同一任务同一查询只发布一份完整数据；锁文件仅在宿主meta中。
     export_lock = exports_meta / f"{dataset_id}.lock"
     try:
@@ -261,10 +263,29 @@ def export_dataset(context: dict, indicator_ids: list[str], org_ids: list[str] |
     os.close(descriptor)
     schema = _arrow_schema()
     row_count, actual_snapshots = 0, set()
+    charged_rows = charged_bytes = 0
+    staged_manifest = manifest_path.with_suffix(".json.tmp")
+
+    def exported_size():
+        return sum(path.stat().st_size for path in (parquet, evidence_index, schema_path) if path.exists())
+
+    def account():
+        nonlocal charged_rows, charged_bytes
+        if budget:
+            size = exported_size()
+            before_rows, before_bytes = budget.export_rows_charged, budget.export_bytes_charged
+            try:
+                budget.charge_export(rows=row_count - charged_rows, bytes=max(0, size - charged_bytes))
+            finally:
+                # charge可能已提交后才抛取消/超额；以确认落账的增量推进，不能重复扣。
+                charged_rows += budget.export_rows_charged - before_rows
+                charged_bytes += budget.export_bytes_charged - before_bytes
     try:
         with pq.ParquetWriter(parquet, schema, compression="zstd") as writer, evidence_index.open("w", encoding="utf-8") as index:
             batch = []
             for row in services.iter_metrics(context, indicator_ids, org_ids, history):
+                if budget:
+                    budget.check_cancelled()
                 if cancelled and cancelled():
                     raise WorkspaceError("TIMEOUT", "数据导出已取消")
                 batch.append(row)
@@ -273,6 +294,8 @@ def export_dataset(context: dict, indicator_ids: list[str], org_ids: list[str] |
                 actual_snapshots.add(row["snapshot_id"])
                 if len(batch) == 1000:
                     writer.write_table(pa.Table.from_pylist(batch, schema=schema))
+                    index.flush()
+                    account()
                     batch.clear()
             if batch:
                 writer.write_table(pa.Table.from_pylist(batch, schema=schema))
@@ -282,6 +305,7 @@ def export_dataset(context: dict, indicator_ids: list[str], org_ids: list[str] |
         schema_description = {"columns": [{"name": field.name, "type": str(field.type)} for field in schema],
                               "indicators": definitions, "value_encoding": "decimal_string", "query": query}
         schema_path.write_text(json.dumps(schema_description, ensure_ascii=False, indent=2), encoding="utf-8")
+        account()
         manifest = {
             "dataset_id": dataset_id, "run_id": context["run_id"], "source": context["source"], "as_of": context["as_of"],
             "path": f"/data/{parquet.name}", "schema_path": f"/data/{schema_path.name}",
@@ -290,14 +314,30 @@ def export_dataset(context: dict, indicator_ids: list[str], org_ids: list[str] |
             "query": query, "snapshot_ids": sorted(actual_snapshots), "allowed_snapshot_ids": context["history_snapshot_ids"],
             "context_sha256": context_hash, "created_at": datetime.now(timezone.utc).isoformat(),
         }
-        staged_manifest = manifest_path.with_suffix(".json.tmp")
         staged_manifest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        if budget:
+            budget.check_cancelled()
+        if cancelled and cancelled():
+            raise WorkspaceError("TIMEOUT", "数据导出已取消")
         staged_manifest.replace(manifest_path)
         return {**manifest, "reused": False}
-    except Exception:
-        # 只清理由本次随机ID创建的文件；不留下看似完整的半份数据集。
-        for path in (parquet, schema_path, evidence_index):
-            path.unlink(missing_ok=True)
+    except Exception as original_error:
+        # writer/index已退出并flush，先结算不足1000行的尾批与关闭时增加的字节。
+        try:
+            account()
+        except Exception as accounting_error:
+            try:
+                uncharged = charged_rows < row_count or charged_bytes < exported_size()
+            except OSError:
+                uncharged = True
+            if budget and uncharged:
+                original_error.add_note(f"尾批额度结算未完成：{type(accounting_error).__name__}")
+        # 不让清理过程把原始查询/写入/取消根因替换成另一个业务错误。
+        for path in (parquet, schema_path, evidence_index, staged_manifest):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                original_error.add_note(f"导出临时文件清理未完成：{type(cleanup_error).__name__}")
         raise
     finally:
         export_lock.unlink(missing_ok=True)

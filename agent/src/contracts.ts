@@ -70,7 +70,8 @@ export type ExplainBatchRequest = {
 export type ExploreRequest = { operation: "explore"; context: TaskContext; budget_ms: number };
 export type ExplorationFinding = { org_id: string; statement: string; evidence_ids: string[] };
 export type ExplorationSubmission = { summary: string; findings: ExplorationFinding[]; execution_ids: string[]; result_file: string };
-export type ExploreResult = ExplorationSubmission & {
+export type ZeroCandidates = { outcome: "zero-candidates"; plan_id: string; summary: string; coverage: Record<string, unknown> };
+export type ExploreResult = (ExplorationSubmission | ZeroCandidates) & {
   mode: ResultMode;
   trace: AgentTrace[];
   runtime: RuntimeInfo;
@@ -87,12 +88,16 @@ export type AgentTrace = {
   event: "request" | "tool";
   transport?: "mcp" | "local";
   tool?: string;
-  status?: "ok" | "error";
+  status?: "ok" | "error" | "cancelled";
   request?: number;
   arguments?: Record<string, unknown>;
   evidence_ids?: string[];
   execution_id?: string;
   exit_code?: number;
+  parent_tool?: "risk_js";
+  duration_ms?: number;
+  response_bytes?: number;
+  plan_id?: string;
 };
 
 export type RuntimeInfo = {
@@ -102,6 +107,9 @@ export type RuntimeInfo = {
   model: string;
   requests: number;
   tool_calls: number;
+  nested_tool_calls?: number;
+  host_tool_calls?: number;
+  model_tool_result_bytes?: number;
   mode: AgentMode;
   llm_connected: boolean;
 };

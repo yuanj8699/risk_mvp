@@ -47,6 +47,15 @@ class Submission(BaseModel):
 
 def validate_code_result(run_id: str, result: dict) -> dict:
     """校验来源/机构及成功执行产物；保留可重跑证据，不声称自动证明任意脚本逻辑。"""
+    if result.get("outcome") == "zero-candidates":
+        from .query_plans import load_query_plan
+        saved = load_query_plan(run_id, result.get("plan_id"))
+        if saved["status"] != "zero-candidates" or saved["plan"]["org_ids"] or not saved["coverage"]:
+            raise workspace.WorkspaceError("UNVERIFIED_RESULT", "零候选结果缺少宿主检查回执")
+        return {"outcome": "zero-candidates", "plan_id": saved["plan_id"],
+                "summary": "补查计划没有候选行社，未启动导出或Python计算；这不表示所有行社均无风险。",
+                "coverage": saved["coverage"], "mode": result.get("mode"),
+                "trace": result.get("trace", []), "runtime": result.get("runtime", {})}
     submitted = Submission.model_validate(result)
     context = load_task_context(run_id)
     ids = list(dict.fromkeys(eid for item in submitted.findings for eid in item.evidence_ids))
@@ -165,8 +174,10 @@ def create_code_run(data: CodeRunInput):
         with SessionLocal() as db:
             run = _get_run(db, run_id)
             run.selection = {**run.selection, "code_result": result}
-            run.summary = {"case_count": len(result["findings"]), "evidence_count": len(result["evidence"])}
-            run.status = "completed"
+            no_candidates = result.get("outcome") == "zero-candidates"
+            run.summary = ({"candidate_count": 0, "coverage": result["coverage"]} if no_candidates else
+                           {"case_count": len(result["findings"]), "evidence_count": len(result["evidence"])})
+            run.status = "no_candidates" if no_candidates else "completed"
             db.commit()
             return _run_dict(run)
     except Exception as exc:

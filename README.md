@@ -46,6 +46,10 @@ npm --prefix agent run build
 
 ## 2. 自主代码分析
 
+可选的Code Mode实验默认关闭。设置`RISK_CODEMODE=1`后启动服务，Pi可用一个`risk_js`调用组合规则检查和指标目录查询；宿主校验并登记只读计划，Python按计划路径取数。两条路径共用应用库中的任务查询额度。不开启时保留原逐工具模式。
+
+本机已验证真实QuickJS、MCP、计划文件和共享额度，Docker完整计算仍待验收。固定模型流减少了模型往返，但增加了本地开销，继续默认关闭。详见[Code Mode实验说明](docs/codemode-poc.md)。
+
 创建任务时固定主题、数据快照、机构范围与历史快照集合。Pi可使用任务文件和隔离执行工具，Python脚本通过 `risk_client.export_metrics()` 请求授权指标数据，返回容器内Parquet路径及清单。完整记录留在文件中；模型读取代码输出和小型摘要，而不逐行接收整份数据。
 
 ```powershell

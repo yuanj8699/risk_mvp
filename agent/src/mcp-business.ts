@@ -8,7 +8,8 @@ import type { TaskContext } from "./contracts.js";
 
 export const BUSINESS_TOOLS = ["search_indicators", "query_metrics", "check_risks", "get_letter_template"] as const;
 export const EXPLORATION_TOOLS = ["search_indicators", "check_risks", "get_letter_template", "write_task_file", "read_task_file", "list_task_files", "execute_python"] as const;
-export const MCP_TOOL_NAMES = [...new Set([...BUSINESS_TOOLS, ...EXPLORATION_TOOLS])];
+export const PLAN_HOST_TOOL = "register_query_plan" as const;
+export const MCP_TOOL_NAMES = [...new Set([...BUSINESS_TOOLS, ...EXPLORATION_TOOLS, PLAN_HOST_TOOL])];
 export type BusinessToolName = typeof MCP_TOOL_NAMES[number];
 
 export class BusinessToolError extends Error {
@@ -33,6 +34,7 @@ export class BusinessMcpClient {
       env: {
         PYTHONUTF8: "1", PYTHONUNBUFFERED: "1",
         ...(env.RISK_DATABASE_URL ? { RISK_DATABASE_URL: env.RISK_DATABASE_URL } : {}),
+        ...Object.fromEntries(Object.entries(env).filter(([key, value]) => value !== undefined && (key === "RISK_CODEMODE" || key.startsWith("RISK_QUERY_") || key.startsWith("RISK_EXPORT_"))) as [string, string][]),
         ...Object.fromEntries(["RISK_SANDBOX_IMAGE", "RISK_TASK_WORKSPACE_DIR", "DOCKER_HOST", "DOCKER_CONTEXT"].filter(key => env[key]).map(key => [key, env[key]!])),
         RISK_TASK_RUN_ID: context.run_id,
         ...(orgId ? { RISK_TASK_ORG_ID: orgId } : {}),
@@ -62,8 +64,16 @@ export class BusinessMcpClient {
   }
 
   /** schema/说明直接来自MCP服务，客户端只筛选白名单并绑定Pi执行入口。 */
-  tools(execute: (name: BusinessToolName, args: Record<string, unknown>) => Promise<AgentToolResult>): AgentTool[] {
-    return this.definitions.map(tool => ({
+  definitionsFor(names: readonly BusinessToolName[]): Tool[] {
+    return names.map(name => {
+      const definition = this.definitions.find(tool => tool.name === name);
+      if (!definition) throw new BusinessToolError("TOOL_NOT_ALLOWED", "宿主未授权该工具");
+      return definition;
+    });
+  }
+
+  tools(execute: (name: BusinessToolName, args: Record<string, unknown>) => Promise<AgentToolResult>, visible = this.allowedTools): AgentTool[] {
+    return this.definitionsFor(visible.filter(name => name !== PLAN_HOST_TOOL)).map(tool => ({
       name: tool.name, label: tool.title ?? tool.name, description: tool.description ?? tool.name,
       // Pi支持标准JSON Schema，MCP SDK已校验inputSchema的对象结构。
       parameters: tool.inputSchema as TSchema,
@@ -72,6 +82,7 @@ export class BusinessMcpClient {
   }
 
   async call(name: BusinessToolName, args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    if (!this.allowedTools.includes(name)) throw new BusinessToolError("TOOL_NOT_ALLOWED", "宿主未授权该工具");
     try {
       const result = await this.client.callTool({ name, arguments: args }, undefined, this.options(signal));
       const content = Array.isArray(result.content) ? result.content : [];
@@ -94,7 +105,7 @@ export class BusinessMcpClient {
         const recoverable = ["INVALID_ARGUMENT", "UNKNOWN_INDICATOR", "SCOPE_VIOLATION", "VALIDATION_ERROR",
           "FILE_NOT_FOUND", "PATH_VIOLATION", "OUTPUT_LIMIT", "WORKSPACE_BUSY"].includes(code);
         // WorkspaceError已由后端整理为安全说明；环境不可用仍终止任务，不能冒充数据查询失败。
-        const safeMessage = recoverable || ["SANDBOX_UNAVAILABLE", "SANDBOX_ACTIVE"].includes(code);
+        const safeMessage = recoverable || ["SANDBOX_UNAVAILABLE", "SANDBOX_ACTIVE", "QUERY_BUDGET_EXCEEDED", "RATE_LIMITED", "QUERY_CONCURRENCY", "GLOBAL_CONCURRENCY", "EXPORT_BUDGET_EXCEEDED", "QUERY_TIMEOUT", "CANCELLED", "CONFIG_ERROR"].includes(code);
         const message = safeMessage ? (failure?.message ?? "任务工具不可用，请检查运行条件或参数") : "MCP数据源不可用或查询失败";
         throw new BusinessToolError(code, message, recoverable);
       }

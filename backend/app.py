@@ -101,6 +101,8 @@ async def lifespan(app):
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         seed_database(db)
+    from .query_budget import reclaim_dead_owners
+    reclaim_dead_owners()
     yield
 
 

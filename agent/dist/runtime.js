@@ -225,7 +225,8 @@ export function errorStream(model, error) {
 export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
     let requests = 0, toolCalls = 0;
     let failure;
-    const trace = [];
+    const trace = scope?.trace ?? [];
+    let modelResultBytes = 0;
     const stream = cfg.stream ?? scope?.demoStream ?? demoStream("select");
     const agent = new Agent({
         initialState: {
@@ -253,6 +254,8 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
             }
         },
         beforeToolCall: async () => {
+            if (scope?.done?.())
+                return { block: true, reason: "本任务已形成终止结果，不再执行后续工具", terminate: true };
             if (++toolCalls > cfg.limits.tools) {
                 failure = new RiskAgentError("BUDGET_EXCEEDED", "Pi Agent工具调用次数达到上限");
                 return { block: true, reason: failure.message, terminate: true };
@@ -264,17 +267,18 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
             failure ??= scope?.fatal();
             return failure ? { terminate: true } : undefined;
         },
-        finishTurn: async () => failure ? { action: "end" } : undefined,
+        finishTurn: async () => failure || scope?.done?.() ? { action: "end" } : undefined,
     });
     const argumentsById = new Map();
     agent.subscribe(event => {
         if (event.type === "tool_execution_start") {
             // submit只记录引用，不把模型原始文本或银行数值复制到运行轨迹。
             const args = event.args;
-            const safe = event.toolName.startsWith("submit_") ? {} : event.toolName === "write_task_file" ? { path: args.path, content_chars: typeof args.content === "string" ? args.content.length : 0 } : args;
+            const safe = event.toolName.startsWith("submit_") || event.toolName === "risk_js" ? {} : event.toolName === "write_task_file" ? { path: args.path, content_chars: typeof args.content === "string" ? args.content.length : 0 } : args;
             argumentsById.set(event.toolCallId, safe);
         }
         if (event.type === "tool_execution_end") {
+            modelResultBytes += Buffer.byteLength(JSON.stringify(event.result.content), "utf8");
             const details = event.result.details;
             trace.push({ event: "tool", transport: MCP_TOOL_NAMES.includes(event.toolName) ? "mcp" : "local", tool: event.toolName, status: event.isError || (details?.exit_code !== undefined && details.exit_code !== 0) ? "error" : "ok", execution_id: details?.execution_id, exit_code: details?.exit_code, arguments: argumentsById.get(event.toolCallId), evidence_ids: details?.evidence_ids });
         }
@@ -306,7 +310,7 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
             throw new RiskAgentError("INVALID_OUTPUT", "Pi Agent未提交有效结构化结果");
         return { value, trace, runtime: {
                 framework: "pi-agent-core", version: "1.4.0", provider: cfg.model.provider, model: cfg.model.id,
-                requests, tool_calls: toolCalls, mode: cfg.mode, llm_connected: cfg.mode === "model",
+                requests, tool_calls: toolCalls + (scope?.nestedCalls?.() ?? 0), nested_tool_calls: scope?.nestedCalls?.() ?? 0, host_tool_calls: scope?.hostCalls?.() ?? toolCalls, model_tool_result_bytes: modelResultBytes, mode: cfg.mode, llm_connected: cfg.mode === "model",
             } };
     }
     finally {
