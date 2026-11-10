@@ -172,3 +172,41 @@ def test_stdio_mcp_reads_committed_context_and_recovers_from_bad_query(store):
             denied = await client.call_tool("query_metrics", {"indicator_ids": ["npl_ratio"], "org_ids": ["LS001"]}, raise_on_error=False)
             assert json.loads(denied.content[0].text)["error"]["code"] == "SCOPE_VIOLATION"
     asyncio.run(exercise())
+
+
+def test_stdio_mcp_schema_failures_share_budget_with_valid_reads(store):
+    from fastmcp import Client
+    from fastmcp.client.transports import StdioTransport
+
+    m = store.models
+    with store.factory() as db:
+        run = db.get(m.AnalysisRun, "service-run")
+        run.selection = {**run.selection, "kind": "code"}
+        db.commit()
+    root = str(Path(__file__).resolve().parents[1])
+    env = {**os.environ, "RISK_DATABASE_URL": store.url, "RISK_TASK_RUN_ID": "service-run",
+           "RISK_TASK_ORG_ID": "LS082", "RISK_QUERY_MAX_REQUESTS": "2",
+           "PYTHONUTF8": "1", "FASTMCP_LOG_LEVEL": "ERROR"}
+
+    def assert_budget(used):
+        with store.factory() as db:
+            assert db.get(m.QueryBudgetLedger, "service-run").requests_used == used
+            operations = list(db.scalars(select(m.QueryOperation).where(m.QueryOperation.run_id == "service-run")))
+            assert len(operations) == used and all(row.finished_at is not None for row in operations)
+
+    async def exercise():
+        transport = StdioTransport(sys.executable, ["-m", "backend.mcp_server"], env=env, cwd=root, keep_alive=False)
+        async with Client(transport) as client:
+            valid = await client.call_tool("search_indicators", {"query": "不良"})
+            assert valid.data["items"]
+            assert_budget(1)  # 中间件与工具体共享票据，合法请求不能重复扣费。
+            invalid = await client.call_tool("search_indicators", {"query": ["wrong-type"]}, raise_on_error=False)
+            assert invalid.is_error
+            assert_budget(2)
+            for arguments in ({"query": "不良"}, {"query": ["wrong-type"]}):
+                denied = await client.call_tool("search_indicators", arguments, raise_on_error=False)
+                assert denied.is_error
+                assert json.loads(denied.content[0].text)["error"]["code"] == "QUERY_BUDGET_EXCEEDED"
+            assert_budget(2)
+
+    asyncio.run(exercise())

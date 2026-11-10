@@ -199,6 +199,7 @@ class PiAnalysisProvider:
             "provider": os.getenv("RISK_PI_PROVIDER", ""),
             "model": os.getenv("RISK_PI_MODEL", ""),
             "base_url": os.getenv("RISK_PI_BASE_URL", ""),
+            "codemode": os.getenv("RISK_CODEMODE", "0"),
         }
 
     def _request(self, payload: JsonObject, budget_ms: int | None = None) -> JsonObject:
@@ -311,6 +312,8 @@ class PiAnalysisProvider:
             from .code_runner import cleanup_task_container
             if reaped:
                 cleanup = cleanup_task_container(context["run_id"])
+                from .query_budget import reclaim_dead_owners
+                reclaim_dead_owners(context["run_id"])
                 if not cleanup["removed"]:
                     raise AnalysisError("隔离执行未确认安全结束：" + cleanup["message"])
 

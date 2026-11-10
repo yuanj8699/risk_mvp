@@ -18,8 +18,10 @@ import time
 from uuid import uuid4
 
 from . import services
+from .business_operations import export_operation
+from .query_budget import BudgetError
 from .task_workspace import (
-    MAX_WORK_BYTES, MAX_WORK_FILES, WorkspaceError, export_dataset, list_task_files,
+    MAX_WORK_BYTES, MAX_WORK_FILES, WorkspaceError, list_task_files,
     clear_active_execution, mark_active_execution, read_task_file, save_execution,
     task_lock, task_paths, work_path, work_usage,
 )
@@ -210,10 +212,10 @@ def execute_python(run_id: str, script_path: str, timeout_seconds: int = 60) -> 
                 params = request.get("params", {})
                 if request.get("method") != "export_metrics" or not isinstance(params, dict) or set(params) - {"indicator_ids", "org_ids", "history"}:
                     raise WorkspaceError("INVALID_ARGUMENT", "只允许export_metrics只读取数请求")
-                manifest = export_dataset(context, params.get("indicator_ids"), params.get("org_ids"),
+                manifest = export_operation(context, params.get("indicator_ids"), params.get("org_ids"),
                                           params.get("history", True), cancelled=cancelled.is_set)
                 emit(("rpc_result", {"id": request["id"], "result": manifest}))
-            except (WorkspaceError, services.ServiceError) as exc:
+            except (WorkspaceError, services.ServiceError, BudgetError) as exc:
                 emit(("rpc_result", {"id": request["id"], "error": {"code": exc.code, "message": str(exc)}}))
             except Exception:
                 emit(("rpc_result", {"id": request["id"], "error": {"code": "SOURCE_ERROR", "message": "只读导出未完成，请检查任务与数据源"}}))
@@ -241,7 +243,9 @@ def execute_python(run_id: str, script_path: str, timeout_seconds: int = 60) -> 
                 reply({"id": request["id"], "error": {"code": "REQUEST_LIMIT", "message": "取数请求须串行，且单次执行最多16次"}})
                 return
             rpc_busy = True
-            threading.Thread(target=export_request, args=(request,), daemon=True).start()
+            worker = threading.Thread(target=export_request, args=(request,), daemon=True)
+            workers.append(worker)
+            worker.start()
 
         try:
             mark_active_execution(run_id, execution_id, name)

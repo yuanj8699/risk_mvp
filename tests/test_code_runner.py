@@ -14,8 +14,11 @@ from test_services import store
 
 @pytest.fixture
 def workspace(store, tmp_path, monkeypatch):
-    from backend import code_runner, task_workspace
+    from backend import code_runner, task_workspace, query_budget
     monkeypatch.setattr(task_workspace, "TASK_ROOT", tmp_path / "tasks")
+    monkeypatch.setattr(query_budget, "SessionLocal", store.factory)
+    with store.factory().bind.connect() as connection:
+        connection.exec_driver_sql("PRAGMA journal_mode=WAL")
     return store, task_workspace, code_runner
 
 

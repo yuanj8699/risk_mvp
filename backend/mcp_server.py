@@ -5,16 +5,25 @@
 """
 from __future__ import annotations
 
+import asyncio
+from contextvars import ContextVar
 import json
 import os
+import threading
 
+from anyio import CancelScope
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import Middleware
 
 from . import services
+from .business_operations import read_operation, read_operation_scope
+from .query_budget import BudgetError
 
 mcp = FastMCP("risk-business", mask_error_details=True, strict_input_validation=True)
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+READ_OPERATIONS = {"search_indicators", "query_metrics", "check_risks", "get_letter_template"}
+_request_cancelled: ContextVar[threading.Event | None] = ContextVar("mcp_read_cancelled", default=None)
 
 
 def _context() -> dict:
@@ -24,41 +33,84 @@ def _context() -> dict:
     return services.load_task_context(run_id, os.getenv("RISK_TASK_ORG_ID") or None)
 
 
-def _call(action):
+class ReadBudgetMiddleware(Middleware):
+    async def on_call_tool(self, context, call_next):
+        operation = context.message.name
+        if operation not in READ_OPERATIONS:
+            return await call_next(context)
+        cancelled = threading.Event()
+        token = _request_cancelled.set(cancelled)
+        try:
+            # 严格参数校验属于请求的一部分；失败也扣费，工具线程复用此票据。
+            with read_operation_scope(_context(), operation, cancelled=cancelled.is_set):
+                return await call_next(context)
+        except (services.ServiceError, BudgetError) as exc:
+            raise ToolError(json.dumps({"error": {"code": exc.code, "message": str(exc)}}, ensure_ascii=False)) from None
+        finally:
+            _request_cancelled.reset(token)
+
+
+mcp.add_middleware(ReadBudgetMiddleware())
+
+
+def _call_sync(operation, action, cancelled):
     """已知业务错误供模型纠正；其他异常由FastMCP屏蔽，避免泄露连接信息。"""
     try:
-        return action(_context())
-    except services.ServiceError as exc:
+        return read_operation(_context(), operation, action, cancelled=cancelled)
+    except (services.ServiceError, BudgetError) as exc:
         raise ToolError(json.dumps({"error": {"code": exc.code, "message": str(exc)}}, ensure_ascii=False)) from None
 
 
+async def _call(operation, action):
+    """MCP取消传到实际查询；等待工作线程退出后才让请求结束、释放并发占位。"""
+    cancelled = _request_cancelled.get() or threading.Event()
+    worker = asyncio.create_task(asyncio.to_thread(_call_sync, operation, action, cancelled.is_set))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancelled.set()
+        # MCP使用AnyIO级联取消；仅asyncio.shield仍会在下一次await再次被取消。
+        with CancelScope(shield=True):
+            try:
+                await asyncio.shield(worker)
+            except ToolError:
+                pass  # 查询已确认退出，取消路径不再向已关闭请求发送业务错误。
+        raise
+
+
 @mcp.tool(annotations=READ_ONLY)
-def search_indicators(query: str = "", limit: int = 50, offset: int = 0) -> dict:
+async def search_indicators(query: str = "", limit: int = 50, offset: int = 0) -> dict:
     """查指标目录、口径、单位、频率与排名信息；返回明确分页，不修改监测规则。"""
-    return _call(lambda _: services.search_indicators(query, limit, offset))
+    return await _call("search_indicators", lambda _: services.search_indicators(query, limit, offset))
 
 
 @mcp.tool(annotations=READ_ONLY)
-def query_metrics(indicator_ids: list[str], org_ids: list[str] | None = None,
+async def query_metrics(indicator_ids: list[str], org_ids: list[str] | None = None,
                   history: bool = False, limit: int = 100, offset: int = 0) -> dict:
     """在固定任务内批量取证。history=False取截至日最新期次，True返回去重历史。
 
     org_ids默认宿主绑定机构。仅引用usable=true且quality_status=valid的实际观测；
     返回evidence_id、实际日期、原始十进制值、快照及分页覆盖，不把缺数视为零。
     """
-    return _call(lambda context: services.query_metrics(context, indicator_ids, org_ids, history, limit, offset))
+    return await _call("query_metrics", lambda context: services.query_metrics(context, indicator_ids, org_ids, history, limit, offset))
 
 
 @mcp.tool(annotations=READ_ONLY)
-def check_risks() -> dict:
+async def check_risks() -> dict:
     """按本次固定规则检测选定快照，返回检查明细和触发证据；不创建任务或Agent。"""
-    return _call(services.check_risks)
+    def checked(context):
+        result = services.check_risks(context)
+        if os.getenv("RISK_CODEMODE") == "1":
+            from .query_plans import small_risk_check
+            return small_risk_check(context, result)
+        return result
+    return await _call("check_risks", checked)
 
 
 @mcp.tool(annotations=READ_ONLY)
-def get_letter_template(version: str = "test-v1") -> dict:
+async def get_letter_template(version: str = "test-v1") -> dict:
     """读取指定版本函件模板与填充字段，不生成、审核或发送函件。"""
-    return _call(lambda _: services.get_letter_template(version))
+    return await _call("get_letter_template", lambda _: services.get_letter_template(version))
 
 
 def _code_call(action):
@@ -72,8 +124,15 @@ def _code_call(action):
             if run.selection.get("kind") != "code" or run.status != "running":
                 raise services.ServiceError("SCOPE_VIOLATION", "任务未授权代码执行或已结束")
         return action(context["run_id"])
-    except (services.ServiceError, WorkspaceError) as exc:
+    except (services.ServiceError, WorkspaceError, BudgetError) as exc:
         raise ToolError(json.dumps({"error": {"code": exc.code, "message": str(exc)}}, ensure_ascii=False)) from None
+
+
+@mcp.tool()
+def register_query_plan(plan: dict, check_receipt_id: str | None = None) -> dict:
+    """宿主内部登记计划；仅Node适配器调用，不向Pi或JS注入此能力。"""
+    from .query_plans import register_query_plan as register
+    return _code_call(lambda run_id: register(run_id, plan, check_receipt_id))
 
 
 @mcp.tool()

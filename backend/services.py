@@ -11,7 +11,7 @@ from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
-from sqlalchemy import select, func, case
+from sqlalchemy import select, func, case, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from .models import AnalysisRun, Indicator, Observation, Organization, Rule, SessionLocal, Snapshot
@@ -27,10 +27,35 @@ class ServiceError(ValueError):
 
 @contextmanager
 def read_session():
+    from .query_budget import current_ticket
+    ticket = current_ticket()
     try:
         with SessionLocal() as db:
-            yield db
+            connection = db.connection()
+            raw = connection.connection.driver_connection
+            if ticket:
+                ticket.check_cancelled()
+                if connection.dialect.name == "sqlite":
+                    def interrupted():
+                        try:
+                            ticket.check_cancelled()
+                            return 0
+                        except ValueError:
+                            return 1
+                    raw.set_progress_handler(interrupted, 1000)
+                elif connection.dialect.name == "postgresql":
+                    db.execute(text("SELECT set_config('statement_timeout', :ms, true)"),
+                               {"ms": str(max(1, int(ticket.remaining_seconds() * 1000)))})
+            try:
+                yield db
+                if ticket:
+                    ticket.check_cancelled()
+            finally:
+                if ticket and connection.dialect.name == "sqlite":
+                    raw.set_progress_handler(None, 0)
     except SQLAlchemyError as exc:
+        if ticket:
+            ticket.check_cancelled()
         raise ServiceError("SOURCE_ERROR", "应用指标快照暂不可读取，请检查数据库连接与初始化状态") from exc
 
 

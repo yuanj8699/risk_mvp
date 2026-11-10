@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, create_engine, event
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
@@ -24,6 +24,8 @@ if DATABASE_URL.startswith("sqlite"):
     def sqlite_settings(connection, _):
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=5000")
+        # 指标流式读取与额度账本写入使用不同连接，WAL避免长读事务阻塞增量记账。
+        connection.execute("PRAGMA journal_mode=WAL")
 
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
@@ -141,6 +143,33 @@ class AnalysisRun(Base):
     rule_snapshot: Mapped[list] = mapped_column(JSON, default=list)
     checks: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class QueryBudgetGate(Base):
+    """PostgreSQL全局准入锁的一行；SQLite使用BEGIN IMMEDIATE串行化同一短事务。"""
+    __tablename__ = "query_budget_gate"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+
+class QueryBudgetLedger(Base):
+    """整任务累计额度；JS、MCP与Python导出共用，失败或重试不清零。"""
+    __tablename__ = "query_budget_ledgers"
+    run_id: Mapped[str] = mapped_column(ForeignKey("analysis_runs.id"), primary_key=True)
+    requests_used: Mapped[int] = mapped_column(Integer, default=0)
+    export_rows: Mapped[int] = mapped_column(BigInteger, default=0)
+    export_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class QueryOperation(Base):
+    """已准入请求及占位；只有实际结束或确认owner进程死亡才填写finished_at。"""
+    __tablename__ = "query_operations"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("analysis_runs.id"), index=True)
+    operation: Mapped[str] = mapped_column(String(100))
+    owner_pid: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[float] = mapped_column(Float, index=True)
+    deadline_at: Mapped[float] = mapped_column(Float)
+    finished_at: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
 
 
 class RiskCase(Base):
