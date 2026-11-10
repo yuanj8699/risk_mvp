@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENT_DIR = ROOT / "agent"
 RUNNER_PATH = AGENT_DIR / "dist" / "runner.js"
 PROCESS_CLEANUP_SECONDS = 10
+DIAGNOSTIC_MAX_EVENTS = 1000
+DIAGNOSTIC_MAX_BYTES = 1024 * 1024
 
 
 def task_budget_ms() -> int:
@@ -79,6 +81,40 @@ class CaseAnalysis(TypedDict):
 
 class AnalysisError(RuntimeError):
     """Agent 配置、执行或协议失败；上层将其转换为可读的 API 错误。"""
+
+    def __init__(self, message: str, *, diagnostics: JsonObject | None = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
+
+def _validate_diagnostics(value: Any) -> JsonObject:
+    """只验证跨进程诊断的结构与持久化上限；脱敏和有标记的截断由Node完成。"""
+    if not isinstance(value, dict) or not isinstance(value.get("trace"), list):
+        raise AnalysisError("Pi Agent诊断格式错误：trace必须为数组。")
+    if len(value["trace"]) > DIAGNOSTIC_MAX_EVENTS or any(not isinstance(item, dict) for item in value["trace"]):
+        raise AnalysisError("Pi Agent诊断格式错误：trace必须为不超过1000条的对象数组。")
+    if "runtime" in value and not isinstance(value["runtime"], dict):
+        raise AnalysisError("Pi Agent诊断格式错误：runtime必须为对象。")
+    if "truncated" in value and not isinstance(value["truncated"], bool):
+        raise AnalysisError("Pi Agent诊断格式错误：truncated必须为布尔值。")
+    try:
+        size = len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise AnalysisError("Pi Agent诊断格式错误：内容不是有效JSON。") from exc
+    if size > DIAGNOSTIC_MAX_BYTES:
+        raise AnalysisError("Pi Agent诊断超过1MiB上限，Node未按协议截断。")
+    return value
+
+
+def result_diagnostics(result: JsonObject) -> JsonObject | None:
+    """提取已完成Agent调用的轨迹，使后续业务校验失败仍可复核模型与工具调用。"""
+    if "trace" not in result and "runtime" not in result:
+        return None
+    diagnostics = {"trace": result.get("trace", [])}
+    for key in ("runtime", "truncated"):
+        if key in result:
+            diagnostics[key] = result[key]
+    return _validate_diagnostics(diagnostics)
 
 
 class ProcessCleanupError(AnalysisError):
@@ -183,7 +219,7 @@ def _owned_node_tree(process: subprocess.Popen):
 class PiAnalysisProvider:
     """通过短生命周期 Node 进程调用 Pi，实例自身不保存会话或业务状态。"""
 
-    version = "pi-1.4.0-risk-mcp-2"
+    version = "pi-1.4.0-risk-mcp-trace-3"
 
     @property
     def mode(self) -> str:
@@ -252,7 +288,14 @@ class PiAnalysisProvider:
             error = response.get("error", "执行失败") if isinstance(response, dict) else "返回格式错误"
             if isinstance(error, dict):
                 error = error.get("message", "执行失败")
-            raise AnalysisError(f"Pi Agent：{error}")
+            diagnostics = None
+            if isinstance(response, dict) and "diagnostics" in response:
+                try:
+                    diagnostics = _validate_diagnostics(response["diagnostics"])
+                except AnalysisError as exc:
+                    raise AnalysisError(f"Pi Agent：{error}；{exc}") from exc
+            raise AnalysisError(f"Pi Agent：{error}", diagnostics=diagnostics)
+        result_diagnostics(response)
         return response
 
     def select(
@@ -271,9 +314,9 @@ class PiAnalysisProvider:
         allowed = {item["id"] for item in indicators}
         selected = selection.get("indicator_ids")
         if not isinstance(selected, list) or any(not isinstance(item, str) for item in selected):
-            raise AnalysisError("Pi Agent 指标选择结果格式错误。")
+            raise AnalysisError("Pi Agent 指标选择结果格式错误。", diagnostics=result_diagnostics(selection))
         if not set(selected) <= allowed or not set(mandatory_ids) <= set(selected):
-            raise AnalysisError("Pi Agent 返回未知指标或遗漏必查指标，已拒绝本次结果。")
+            raise AnalysisError("Pi Agent 返回未知指标或遗漏必查指标，已拒绝本次结果。", diagnostics=result_diagnostics(selection))
         return cast(IndicatorSelection, selection)
 
     def explain_batch(self, cases: list[AnalysisCase], context: JsonObject) -> dict[str, CaseAnalysis]:
@@ -291,6 +334,7 @@ class PiAnalysisProvider:
                 for field in ("facts", "hypotheses", "checks", "limitations")
             ):
                 raise AnalysisError("Pi Agent 分析结果格式错误。")
+            result_diagnostics(analysis)
         return cast(dict[str, CaseAnalysis], analyses)
 
     def explore(self, context: JsonObject) -> JsonObject:
@@ -302,10 +346,18 @@ class PiAnalysisProvider:
         if not 1 <= budget <= 600000:
             raise AnalysisError("RISK_CODE_BUDGET_MS必须在1至600000之间")
         reaped = True
+        diagnostics = None
+        failure = None
         try:
-            return self._request({"operation": "explore", "context": context}, budget_ms=budget)
+            result = self._request({"operation": "explore", "context": context}, budget_ms=budget)
+            diagnostics = result_diagnostics(result)
+            return result
         except ProcessCleanupError:
             reaped = False
+            raise
+        except AnalysisError as exc:
+            diagnostics = exc.diagnostics
+            failure = exc
             raise
         finally:
             # _request先回收Node/MCP，再由仍存活的API宿主清理daemon托管的本任务容器。
@@ -315,7 +367,10 @@ class PiAnalysisProvider:
                 from .query_budget import reclaim_dead_owners
                 reclaim_dead_owners(context["run_id"])
                 if not cleanup["removed"]:
-                    raise AnalysisError("隔离执行未确认安全结束：" + cleanup["message"])
+                    message = "隔离执行未确认安全结束：" + cleanup["message"]
+                    if failure is not None:
+                        message = f"{failure}；{message}"
+                    raise AnalysisError(message, diagnostics=diagnostics) from failure
 
 
 provider = PiAnalysisProvider()

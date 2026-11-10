@@ -50,7 +50,7 @@ test("task contract fixes scope and budget while allowing one observation to tri
 
 test("unknown selected IDs and missing mandatory IDs are rejected by executed tool", async () => {
   for (const ids of [["not-in-catalog", "npl_ratio"], ["funds_npl_change"]]) {
-    await assert.rejects(runRequest(selection, { ...demo, streamFn: scriptedSubmit("select", { indicator_ids: ids, reasons: ["测试选择"] }) }), { code: "BUDGET_EXCEEDED" });
+    await assert.rejects(runRequest(selection, { ...demo, streamFn: scriptedSubmit("select", { indicator_ids: ids, reasons: ["测试选择"] }) }), { code: "RECOVERY_EXHAUSTED" });
   }
 });
 
@@ -69,7 +69,7 @@ test("invalid tool output can be corrected after feedback within the same Pi loo
 
 test("result submission requires a preceding evidence/catalog read", async () => {
   const streamFn = model => toolStream(model, "submit_selection", { indicator_ids: ["npl_ratio"], reasons: ["跳过读取"] });
-  await assert.rejects(runRequest(selection, { ...demo, streamFn }), { code: "BUDGET_EXCEEDED" });
+  await assert.rejects(runRequest(selection, { ...demo, streamFn }), { code: "RECOVERY_EXHAUSTED" });
 });
 
 test("repeated requests and tool calls stop at the configured budgets", async () => {

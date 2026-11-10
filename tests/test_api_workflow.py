@@ -436,16 +436,20 @@ def test_unconfigured_pi_model_retains_failed_task_and_triggered_evidence(api, m
 
 def test_agent_failure_retains_evidence_and_requires_explicit_retry(api, monkeypatch):
     from backend.analysis import AnalysisError, provider
+    from backend.models import AnalysisRun, SessionLocal
 
     org = societies(api)[0]
     snapshot = good(import_csv(api, [row(org, rank="82")]))
     with only_rule(api, rule_for(api, "rank", "npl_ratio")):
         payload = {"snapshot_id": snapshot["snapshot_id"], "risk_topic": "信用风险", "org_scope": [org["id"]]}
         calls = []
+        diagnostics = {"trace": [{"event": "request", "id": "failed-case-request", "case_key": org["id"],
+                                  "status": "error", "error": "测试供应商失败"}],
+                       "runtime": {"requests": 1, "tool_calls": 0, "llm_connected": False}}
 
         def unavailable(cases, context):
             calls.append(context["run_id"])
-            raise AnalysisError("测试模拟：Pi 分析服务不可用")
+            raise AnalysisError("测试模拟：Pi 分析服务不可用", diagnostics=diagnostics)
 
         with monkeypatch.context() as patch:
             patch.setattr(provider, "explain_batch", unavailable)
@@ -459,10 +463,22 @@ def test_agent_failure_retains_evidence_and_requires_explicit_retry(api, monkeyp
             assert api.post(f"/api/cases/{retained[0]['id']}/draft").status_code == 409
             repeated = good(api.post("/api/runs", json=payload))
             assert repeated["id"] == run_id and repeated["status"] == "failed"
+            assert repeated["selection"]["diagnostics"] == diagnostics
             assert calls == [run_id]
 
-        retried = good(api.post("/api/runs", json={**payload, "retry": True}))
+        select = provider.select
+        def select_after_retry(*args):
+            with SessionLocal() as db:
+                running = db.get(AnalysisRun, run_id)
+                assert running.status == "running" and running.selection["attempt"] == 2
+                assert not {"diagnostics", "trace", "runtime"} & running.selection.keys()
+            return select(*args)
+        with monkeypatch.context() as patch:
+            patch.setattr(provider, "select", select_after_retry)
+            retried = good(api.post("/api/runs", json={**payload, "retry": True}))
         assert retried["id"] == run_id and retried["status"] == "completed"
+        assert not retried["selection"].get("diagnostics")
+        assert retried["selection"]["trace"] and retried["selection"]["runtime"]
         assert retried["summary"]["case_count"] == 1
         updated = cases_for(api, run_id)
         assert [case["id"] for case in updated] == [case["id"] for case in retained]
@@ -725,3 +741,76 @@ process.stdout.write(JSON.stringify(result));
         assert len(queried) == 1 and queried[0]["indicator_id"] == "overdue_ratio"
         assert analysis["evidence_references"]["checks"][0]["evidence_ids"] == [queried[0]["evidence_id"]]
         assert "4.04%" in good(api.post(f"/api/cases/{case['id']}/draft"))["content"]
+
+
+def test_code_run_retry_replaces_failure_diagnostics_and_preserves_success_trace(api, tmp_path, monkeypatch):
+    from test_analysis_diagnostics import DIAGNOSTICS
+    from backend import task_workspace as workspace
+    from backend.analysis import AnalysisError, provider
+    from backend.models import AnalysisRun, SessionLocal
+    from backend.query_plans import register_query_plan, small_risk_check
+    from backend.services import check_risks
+
+    monkeypatch.setattr(workspace, "TASK_ROOT", tmp_path / "trace-tasks")
+    payload = {"snapshot_id": "demo-2026-10-28", "risk_topic": "失败轨迹重试替换", "org_scope": ["LS001"]}
+    seen = []
+    current_trace = {"trace": [{"event": "tool", "id": "validation-attempt", "tool": "submit_exploration", "status": "ok"}],
+                     "runtime": {"requests": 1, "tool_calls": 1, "llm_connected": False}, "truncated": True}
+
+    def explore(context):
+        seen.append(context["run_id"])
+        with SessionLocal() as db:
+            running = db.get(AnalysisRun, context["run_id"])
+            assert running.status == "running" and running.selection["attempt"] == len(seen)
+            assert not {"diagnostics", "trace", "runtime", "error_type", "code_result"} & running.selection.keys()
+        if len(seen) == 1:
+            raise AnalysisError("固定失败样本", diagnostics=DIAGNOSTICS)
+        if len(seen) == 2:
+            return {"summary": "缺少必需结果字段，宿主必须拒绝", **current_trace}
+        receipt = small_risk_check(context, check_risks(context))
+        plan = register_query_plan(context["run_id"], {"org_ids": [], "indicator_ids": ["npl_ratio"], "history": True},
+                                   receipt["receipt_id"])
+        return {"outcome": "zero-candidates", "plan_id": plan["plan_id"], "mode": "pi-demo", **current_trace}
+
+    monkeypatch.setattr(provider, "explore", explore)
+    failed = api.post("/api/code-runs", json=payload)
+    assert failed.status_code == 502
+    run_id = failed.json()["detail"]["run_id"]
+    detail = good(api.get(f"/api/code-runs/{run_id}"))
+    assert detail["selection"]["diagnostics"] == DIAGNOSTICS
+    assert detail["status"] == "failed" and detail["result"] is None
+
+    invalid = api.post("/api/code-runs", json={**payload, "retry": True})
+    assert invalid.status_code == 502 and invalid.json()["detail"]["run_id"] == run_id
+    detail = good(api.get(f"/api/code-runs/{run_id}"))
+    assert detail["selection"]["diagnostics"] == current_trace
+    assert detail["selection"]["error_type"] == "ValidationError"
+
+    completed = good(api.post("/api/code-runs", json={**payload, "retry": True}))
+    assert completed["id"] == run_id and completed["status"] == "no_candidates"
+    assert not completed["selection"].get("diagnostics")
+    detail = good(api.get(f"/api/code-runs/{run_id}"))
+    assert detail["result"]["trace"] == current_trace["trace"]
+    assert detail["result"]["runtime"] == current_trace["runtime"]
+    assert detail["result"]["truncated"] is True
+    assert detail["executions"] == []
+
+
+@pytest.mark.parametrize("agent_failed", [False, True])
+def test_explore_cleanup_failure_keeps_existing_trace_and_agent_error(api, monkeypatch, agent_failed):
+    from test_analysis_diagnostics import DIAGNOSTICS
+    from backend import code_runner
+    from backend.analysis import AnalysisError, provider
+
+    def request(*_args, **_kwargs):
+        if agent_failed:
+            raise AnalysisError("已发生的Agent测试错误", diagnostics=DIAGNOSTICS)
+        return {"summary": "成功返回的Agent结果", **DIAGNOSTICS}
+
+    monkeypatch.setattr(provider, "_request", request)
+    monkeypatch.setattr(code_runner, "cleanup_task_container", lambda _run_id: {"removed": False, "message": "测试清理未确认"})
+    with pytest.raises(AnalysisError, match="测试清理未确认") as failure:
+        provider.explore({"run_id": "cleanup-diagnostics-test"})
+    assert failure.value.diagnostics == DIAGNOSTICS
+    if agent_failed:
+        assert "已发生的Agent测试错误" in str(failure.value)

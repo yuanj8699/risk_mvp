@@ -1,13 +1,16 @@
 /** Pi业务入口：接收冻结任务，执行受预算约束的查询与分析，输出带真实证据引用的结果。 */
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, Type, } from "@earendil-works/pi-ai";
+import { createModelTap, sanitize, safeError, traceId, jsonBytes, boundedDiagnostics } from "./model-tap.js";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { BusinessMcpClient, BusinessToolError, MCP_TOOL_NAMES } from "./mcp-business.js";
 export class RiskAgentError extends Error {
     code;
-    constructor(code, message) {
+    diagnostics;
+    constructor(code, message, diagnostics) {
         super(message);
         this.code = code;
+        this.diagnostics = diagnostics;
     }
 }
 function invalidInput(message) {
@@ -174,25 +177,30 @@ function defaultProposals(item, queried = []) {
 /** 确定性流只替代模型回复；工具执行、上下文和终止仍由真实Pi Agent管理。 */
 function demoStream(operation, item) {
     return (model, context) => {
-        const results = context.messages.filter(m => m.role === "toolResult");
-        const last = results.at(-1);
-        if (!last)
-            return toolStream(model, operation === "select" ? "read_indicator_catalog" : "check_risks", {});
-        if (last.isError)
-            return errorStream(model, "演示工具返回错误");
-        const read = (message) => JSON.parse(message.content.filter(x => x.type === "text").map(x => x.text).join(""));
+        const results = context.messages.filter(message => message.role === "toolResult");
+        const successful = (name) => results.find(message => message.toolName === name && !message.isError);
+        const read = (message) => JSON.parse(message.content.filter(block => block.type === "text").map(block => block.text).join(""));
         if (operation === "select") {
-            const data = read(last);
+            const catalog = successful("read_indicator_catalog");
+            if (!catalog)
+                return toolStream(model, "read_indicator_catalog", {});
+            const data = read(catalog);
             return toolStream(model, "submit_selection", { indicator_ids: data.suggested_ids, reasons: data.reasons });
         }
-        if (last.toolName === "check_risks")
-            return toolStream(model, "query_metrics", {
-                indicator_ids: ["overdue_ratio", "npl_ratio", "funds_npl_change"], history: true, limit: 100, offset: 0,
-            });
-        if (last.toolName === "query_metrics")
+        if (!successful("check_risks"))
+            return toolStream(model, "check_risks", {});
+        const query = successful("query_metrics");
+        if (!query) {
+            const catalog = successful("search_indicators");
+            if (results.some(message => message.toolName === "query_metrics" && message.isError) && !catalog)
+                return toolStream(model, "search_indicators", { query: "", limit: 100, offset: 0 });
+            const desired = ["overdue_ratio", "npl_ratio", "funds_npl_change"];
+            const ids = catalog ? desired.filter(id => read(catalog).items.some((metric) => metric.id === id)) : desired;
+            return toolStream(model, "query_metrics", { indicator_ids: ids, history: true, limit: 100, offset: 0 });
+        }
+        if (!successful("get_letter_template"))
             return toolStream(model, "get_letter_template", { version: "test-v1" });
-        const query = results.find(m => m.toolName === "query_metrics" && !m.isError);
-        return toolStream(model, "submit_analysis", defaultProposals(item, query ? read(query).evidence : []));
+        return toolStream(model, "submit_analysis", defaultProposals(item, read(query).evidence));
     };
 }
 function emptyMessage(model) {
@@ -223,11 +231,25 @@ export function errorStream(model, error) {
 }
 /** 目录、证据分析和代码探索共用Pi循环：限制调用次数、记录轨迹，仅接受工具提交的结构化结果。 */
 export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
+    const runStarted = performance.now();
+    const phase = scope?.phase ?? "select";
+    const secrets = cfg.apiKey ? [cfg.apiKey] : [];
     let requests = 0, toolCalls = 0;
     let failure;
     const trace = scope?.trace ?? [];
     let modelResultBytes = 0;
     const stream = cfg.stream ?? scope?.demoStream ?? demoStream("select");
+    let currentRequest;
+    let currentTap;
+    const recoveries = new Map();
+    const recoveryLimit = 3; // 总尝试次数：首次失败后最多再纠正两次；仅同名工具成功才清零。
+    const runningTools = new Map();
+    const runtime = () => ({
+        framework: "pi-agent-core", version: "1.4.0", provider: cfg.model.provider, model: cfg.model.id,
+        requests, tool_calls: toolCalls + (scope?.nestedCalls?.() ?? 0), nested_tool_calls: scope?.nestedCalls?.() ?? 0,
+        host_tool_calls: scope?.hostCalls?.() ?? toolCalls, model_tool_result_bytes: modelResultBytes,
+        mode: cfg.mode, llm_connected: cfg.mode === "model", duration_ms: performance.now() - runStarted,
+    });
     const agent = new Agent({
         initialState: {
             model: cfg.model, tools,
@@ -240,16 +262,20 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
                 failure = new RiskAgentError("BUDGET_EXCEEDED", "Pi Agent请求次数达到上限");
                 return errorStream(model, failure.message);
             }
-            trace.push({ event: "request", request: requests });
+            currentRequest = { id: traceId(), event: "request", request: requests, phase, case_key: scope?.caseKey,
+                started_at: new Date().toISOString(), status: "running", model_provider: model.provider, model_id: model.id, llm_connected: cfg.mode === "model" };
+            trace.push(currentRequest);
             // 不依赖模型记忆范围：每次请求重新附上任务上下文和已获得的证据ID。
             const current = scope ? { ...context, messages: [...context.messages, {
                         role: "user", content: JSON.stringify(scope.requestContext()), timestamp: Date.now(),
                     }] } : context;
+            currentTap = createModelTap(currentRequest, model, current, { ...options, maxTokens: Math.min(scope?.maxTokens ?? 2000, model.maxTokens), apiKey: cfg.apiKey, maxRetries: 2 }, cfg.mode === "model", secrets);
             try {
-                return await stream(model, current, { ...options, maxTokens: Math.min(scope?.maxTokens ?? 2000, model.maxTokens), apiKey: cfg.apiKey });
+                return await stream(model, current, currentTap.options);
             }
-            catch {
+            catch (error) {
                 failure = new RiskAgentError("PROVIDER_ERROR", "Pi模型请求失败；请核对接口、认证与服务状态");
+                currentTap?.finish(undefined, error);
                 return errorStream(model, failure.message);
             }
         },
@@ -271,23 +297,52 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
             failure ??= scope?.fatal();
             return failure ? { terminate: true } : undefined;
         },
-        finishTurn: async () => failure || scope?.done?.() ? { action: "end" } : undefined,
+        finishTurn: async () => {
+            if (failure || scope?.done?.())
+                return { action: "end" };
+            if (recoveries.size && output() === undefined)
+                return { action: "continue" };
+            return undefined;
+        },
     });
-    const argumentsById = new Map();
     agent.subscribe(event => {
         if (event.type === "tool_execution_start") {
-            // submit只记录引用，不把模型原始文本或银行数值复制到运行轨迹。
-            const args = event.args;
-            const safe = event.toolName.startsWith("submit_") || event.toolName === "risk_js" ? {} : event.toolName === "write_task_file" ? { path: args.path, content_chars: typeof args.content === "string" ? args.content.length : 0 } : args;
-            argumentsById.set(event.toolCallId, safe);
+            const entry = { id: event.toolCallId, parent_id: currentRequest?.id, event: "tool", phase, case_key: scope?.caseKey,
+                started_at: new Date().toISOString(), status: "running", tool: event.toolName,
+                transport: MCP_TOOL_NAMES.includes(event.toolName) ? "mcp" : "local", arguments: sanitize(event.args, secrets) };
+            trace.push(entry);
+            runningTools.set(event.toolCallId, { entry, started: performance.now() });
         }
         if (event.type === "tool_execution_end") {
-            modelResultBytes += Buffer.byteLength(JSON.stringify(event.result.content), "utf8");
-            const details = event.result.details;
-            trace.push({ event: "tool", transport: MCP_TOOL_NAMES.includes(event.toolName) ? "mcp" : "local", tool: event.toolName, status: event.isError || (details?.exit_code !== undefined && details.exit_code !== 0) ? "error" : "ok", execution_id: details?.execution_id, exit_code: details?.exit_code, arguments: argumentsById.get(event.toolCallId), evidence_ids: details?.evidence_ids });
+            const bytes = jsonBytes(event.result.content);
+            modelResultBytes += bytes;
+            const active = runningTools.get(event.toolCallId);
+            if (active) {
+                const details = event.result.details;
+                Object.assign(active.entry, { duration_ms: performance.now() - active.started, response_bytes: bytes,
+                    status: event.isError || (details?.exit_code !== undefined && details.exit_code !== 0) ? "error" : "ok",
+                    execution_id: details?.execution_id, exit_code: details?.exit_code, evidence_ids: details?.evidence_ids, plan_id: details?.plan_id });
+                const failed = active.entry.status === "error";
+                if (failed)
+                    active.entry.error = safeError(new Error(event.result.content.filter((block) => block.type === "text").map((block) => block.text ?? "").join("\n")), secrets, event.isError ? "TOOL_ERROR" : "PYTHON_EXIT_ERROR");
+                if (failed && !failure) {
+                    const attempt = (recoveries.get(event.toolName) ?? 0) + 1;
+                    recoveries.set(event.toolName, attempt);
+                    Object.assign(active.entry, { recoverable: true, recovery_attempt: attempt, recovery_limit: recoveryLimit, recovery_status: attempt < recoveryLimit ? "retry_available" : "exhausted" });
+                    if (attempt >= recoveryLimit)
+                        failure = new RiskAgentError("RECOVERY_EXHAUSTED", `工具${event.toolName}连续${recoveryLimit}次尝试仍失败，请依据轨迹修正输入或运行条件。`);
+                }
+                else if (!failed && recoveries.has(event.toolName)) {
+                    Object.assign(active.entry, { recoverable: true, recovery_attempt: recoveries.get(event.toolName) + 1, recovery_limit: recoveryLimit, recovery_status: "recovered" });
+                    recoveries.delete(event.toolName);
+                }
+                runningTools.delete(event.toolCallId);
+            }
         }
-        if (event.type === "message_end" && event.message.role === "assistant" && ["error", "aborted"].includes(event.message.stopReason)) {
-            failure ??= new RiskAgentError("PROVIDER_ERROR", "Pi模型请求失败或已中止；请核对接口、认证与服务状态");
+        if (event.type === "message_end" && event.message.role === "assistant") {
+            currentTap?.finish(event.message);
+            if (["error", "aborted"].includes(event.message.stopReason))
+                failure ??= new RiskAgentError("PROVIDER_ERROR", "Pi模型请求失败或已中止；请核对接口、认证与服务状态");
         }
     });
     let timer;
@@ -312,10 +367,19 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
         const value = output();
         if (value === undefined)
             throw new RiskAgentError("INVALID_OUTPUT", "Pi Agent未提交有效结构化结果");
-        return { value, trace, runtime: {
-                framework: "pi-agent-core", version: "1.4.0", provider: cfg.model.provider, model: cfg.model.id,
-                requests, tool_calls: toolCalls + (scope?.nestedCalls?.() ?? 0), nested_tool_calls: scope?.nestedCalls?.() ?? 0, host_tool_calls: scope?.hostCalls?.() ?? toolCalls, model_tool_result_bytes: modelResultBytes, mode: cfg.mode, llm_connected: cfg.mode === "model",
-            } };
+        const bounded = boundedDiagnostics({ trace, runtime: runtime() });
+        return { value, trace: bounded.trace, runtime: { ...runtime(), ...(bounded.truncated ? { trace_truncated: true } : {}) } };
+    }
+    catch (error) {
+        const safe = error instanceof RiskAgentError ? error : new RiskAgentError("RUNTIME_ERROR", "Pi执行未完成");
+        currentTap?.finish(undefined, safe);
+        for (const active of runningTools.values()) {
+            active.entry.status = safe.code === "TIMEOUT" ? "cancelled" : "error";
+            active.entry.duration_ms = performance.now() - active.started;
+            active.entry.error = safeError(safe, secrets);
+        }
+        safe.diagnostics = boundedDiagnostics({ trace, runtime: runtime() });
+        throw safe;
     }
     finally {
         if (timer)
@@ -447,7 +511,7 @@ async function explainCase(item, context, cfg, batchDeadline) {
         mcp = new BusinessMcpClient(cfg.env, context, item.case_key, deadline);
         await mcp.connect(controller.signal);
         const tools = [...mcp.tools(call), submit];
-        const completed = await runAgent(cfg, tools, "核对本次触发规则，主动查询关联指标与历史期次，读取函件模板，然后提交带证据引用的核查建议。数值事实由程序生成。", () => output, deadline - Date.now(), { requestContext: () => ({ task_context: context, current_case: item, available_evidence_ids: [...ids] }), fatal: () => fatal, cancel, demoStream: demoStream("explain", item) });
+        const completed = await runAgent(cfg, tools, "核对本次触发规则，主动查询关联指标与历史期次，读取函件模板，然后提交带证据引用的核查建议。数值事实由程序生成。", () => output, deadline - Date.now(), { phase: "explain", caseKey: item.case_key, requestContext: () => ({ task_context: context, current_case: item, available_evidence_ids: [...ids] }), fatal: () => fatal, cancel, demoStream: demoStream("explain", item) });
         const facts = item.evidence.map(e => `${e.indicator_name}为${e.value_display}；${e.reason}。`);
         const queriedEvidence = [...observations.values()];
         for (const evidence of queriedEvidence.filter(e => ids.has(e.evidence_id))) {
@@ -493,9 +557,22 @@ export async function runRequest(raw, options = {}) {
     const analyses = Object.create(null);
     for (const item of request.cases) {
         const remaining = deadline - Date.now();
-        if (remaining <= 0)
-            throw new RiskAgentError("TIMEOUT", "Pi整批分析达到时间上限");
-        analyses[item.case_key] = await explainCase(item, request.context, cfg, deadline);
+        try {
+            if (remaining <= 0)
+                throw new RiskAgentError("TIMEOUT", "Pi整批分析达到时间上限");
+            analyses[item.case_key] = await explainCase(item, request.context, cfg, deadline);
+        }
+        catch (error) {
+            const failure = error instanceof RiskAgentError ? error : new RiskAgentError("RUNTIME_ERROR", "Pi批量分析失败");
+            const previous = Object.entries(analyses).flatMap(([key, analysis]) => analysis.trace.map(entry => ({ ...entry, case_key: key, phase: "explain" })));
+            const failed = (failure.diagnostics?.trace ?? []).map(entry => ({ ...entry, case_key: item.case_key, phase: "explain" }));
+            const runtimes = [...Object.values(analyses).map(analysis => analysis.runtime), ...(failure.diagnostics?.runtime ? [failure.diagnostics.runtime] : [])];
+            failure.diagnostics = boundedDiagnostics({ trace: [...previous, ...failed], truncated: failure.diagnostics?.truncated,
+                runtime: { completed_cases: Object.keys(analyses).length, failed_case_key: item.case_key,
+                    requests: runtimes.reduce((sum, runtime) => sum + Number(runtime.requests ?? 0), 0),
+                    tool_calls: runtimes.reduce((sum, runtime) => sum + Number(runtime.tool_calls ?? 0), 0), mode: cfg.mode, llm_connected: cfg.mode === "model" } });
+            throw failure;
+        }
     }
     return { analyses };
 }

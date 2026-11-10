@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
-from .analysis import provider
+from .analysis import AnalysisError, provider, result_diagnostics
 from .models import AnalysisRun, Organization, Rule, SessionLocal, Snapshot, uid
 from .services import freeze_context, load_task_context
 from . import task_workspace as workspace
@@ -55,7 +55,8 @@ def validate_code_result(run_id: str, result: dict) -> dict:
         return {"outcome": "zero-candidates", "plan_id": saved["plan_id"],
                 "summary": "补查计划没有候选行社，未启动导出或Python计算；这不表示所有行社均无风险。",
                 "coverage": saved["coverage"], "mode": result.get("mode"),
-                "trace": result.get("trace", []), "runtime": result.get("runtime", {})}
+                "trace": result.get("trace", []), "runtime": result.get("runtime", {}),
+                "truncated": result.get("truncated", False)}
     submitted = Submission.model_validate(result)
     context = load_task_context(run_id)
     ids = list(dict.fromkeys(eid for item in submitted.findings for eid in item.evidence_ids))
@@ -151,7 +152,9 @@ def create_code_run(data: CodeRunInput):
                 db.refresh(run)
                 return _run_dict(run)
             context = run.selection["task_context"]
-            run.selection = {**run.selection, "error": None, "attempt": run.selection.get("attempt", 1) + 1}
+            selection = {key: value for key, value in run.selection.items()
+                         if key not in {"diagnostics", "trace", "runtime", "truncated", "error_type", "code_result"}}
+            run.selection = {**selection, "error": None, "attempt": run.selection.get("attempt", 1) + 1}
         else:
             run_id = uid()
             context = freeze_context(db, run_id, snapshot, topic, frozen, scope)
@@ -169,8 +172,11 @@ def create_code_run(data: CodeRunInput):
                 return _run_dict(winner)
             raise
         run_id = run.id
+    diagnostics = None
     try:
-        result = validate_code_result(run_id, provider.explore(context))
+        result = provider.explore(context)
+        diagnostics = result_diagnostics(result)
+        result = validate_code_result(run_id, result)
         with SessionLocal() as db:
             run = _get_run(db, run_id)
             run.selection = {**run.selection, "code_result": result}
@@ -181,12 +187,12 @@ def create_code_run(data: CodeRunInput):
             db.commit()
             return _run_dict(run)
     except Exception as exc:
-        from .analysis import AnalysisError
         message = str(exc) if isinstance(exc, (AnalysisError, workspace.WorkspaceError)) else "代码分析结果未通过校验，请查看执行日志。"
         with SessionLocal() as db:
             run = _get_run(db, run_id)
             run.status = "failed"
-            run.selection = {**run.selection, "error": message, "error_type": type(exc).__name__}
+            run.selection = {**run.selection, "error": message, "error_type": type(exc).__name__,
+                             "diagnostics": exc.diagnostics if isinstance(exc, AnalysisError) else diagnostics}
             db.commit()
         raise HTTPException(502, {"run_id": run_id, "message": message}) from exc
 

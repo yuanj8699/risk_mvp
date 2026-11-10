@@ -85,10 +85,20 @@ export type AnalysisProposal = { hypotheses: Proposal[]; checks: Proposal[] };
 export type SelectionProposal = { indicator_ids: string[]; reasons: string[] };
 
 export type AgentTrace = {
+  id?: string;
+  parent_id?: string;
+  case_key?: string;
+  phase?: "select" | "explain" | "explore";
+  started_at?: string;
   event: "request" | "tool";
   transport?: "mcp" | "local";
   tool?: string;
-  status?: "ok" | "error" | "cancelled";
+  status?: "running" | "ok" | "error" | "cancelled";
+  error?: { code: string; message: string };
+  recoverable?: boolean;
+  recovery_attempt?: number;
+  recovery_limit?: number;
+  recovery_status?: "retry_available" | "exhausted" | "recovered";
   request?: number;
   arguments?: Record<string, unknown>;
   evidence_ids?: string[];
@@ -98,6 +108,17 @@ export type AgentTrace = {
   duration_ms?: number;
   response_bytes?: number;
   plan_id?: string;
+  model_provider?: string;
+  model_id?: string;
+  llm_connected?: boolean;
+  request_summary?: { message_count: number; tool_names: string[]; payload_bytes?: number };
+  reasoning_content?: string | null;
+  reasoning_source?: "provider_reasoning_content" | "pi_thinking" | null;
+  reasoning_truncated?: boolean;
+  usage?: { input_tokens: number; output_tokens: number; reasoning_tokens: number | null; cache_read_tokens: number; cache_write_tokens: number; total_tokens: number; cost_total: number } | null;
+  retry_count?: number | null;
+  retry_observation?: "fetch" | "unavailable" | "not_applicable";
+  http_attempts?: { attempt: number; started_at: string; duration_ms: number; status_code: number | null; error?: { code: string; message: string } }[];
 };
 
 export type RuntimeInfo = {
@@ -112,7 +133,10 @@ export type RuntimeInfo = {
   model_tool_result_bytes?: number;
   mode: AgentMode;
   llm_connected: boolean;
+  duration_ms?: number;
+  trace_truncated?: boolean;
 };
+export type AgentDiagnostics = { trace: AgentTrace[]; runtime?: RuntimeInfo | Record<string, unknown>; truncated?: boolean };
 
 type ResultMetadata = {
   mode: ResultMode;
@@ -135,4 +159,4 @@ export type ExplainBatchResult = { analyses: Record<string, CaseAnalysis> };
 export type RiskAgentResult = SelectResult | ExplainBatchResult | ExploreResult;
 
 /** CLI失败时返回此结构并以退出码1结束，不输出原始模型响应或认证信息。 */
-export type AgentErrorResponse = { error: { code: string; message: string } };
+export type AgentErrorResponse = { error: { code: string; message: string }; diagnostics?: AgentDiagnostics };

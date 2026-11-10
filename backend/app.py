@@ -261,7 +261,9 @@ def create_run(data: RunPayload):
                 db.refresh(run)
                 return run_dict(run)
             context = run.selection["task_context"]
-            run.selection = {**run.selection, "error": None,
+            selection = {key: value for key, value in run.selection.items()
+                         if key not in {"diagnostics", "trace", "runtime", "truncated", "error_type"}}
+            run.selection = {**selection, "error": None,
                              "attempt": run.selection.get("attempt", 1) + 1}
         else:
             run_id = uid()
@@ -331,7 +333,8 @@ def create_run(data: RunPayload):
         with SessionLocal() as db:
             run = db.get(AnalysisRun, run_id)
             run.status = "failed"
-            run.selection = {**run.selection, "error": message}
+            run.selection = {**run.selection, "error": message,
+                             "diagnostics": exc.diagnostics if isinstance(exc, AnalysisError) else None}
             audit(db, "analysis_failed", run_id, {"error_type": type(exc).__name__})
             db.commit()
         raise HTTPException(502, {"run_id": run_id, "message": message}) from exc
