@@ -1,6 +1,7 @@
 import { createApp, computed, onMounted, ref } from 'vue';
-import { api, send } from './api';
+import { api, send, ApiError } from './api';
 import CodeExploration from './code-exploration';
+import TracePanel, { type AgentTrace, type TraceDiagnostics, type TraceRuntime } from './trace-panel';
 import './styles.css';
 
 // 类型对应后端 JSON 契约。金额/比率保留服务端字符串，页面不重新计算规则。
@@ -11,7 +12,7 @@ interface Rule { id: ID; name: string; kind: 'rank' | 'ratio' | 'exists'; indica
 interface Snapshot { id: ID; name: string; data_date: string; source: string; is_demo: boolean; row_count: number; status: string }
 interface Summary { evaluated?: number; triggered?: number; normal?: number; insufficient?: number; not_applicable?: number; unconfigured?: number; case_count?: number }
 interface TaskContext { run_id: string; topic: string; snapshot_id: string; as_of: string; org_scope: string[] }
-interface Selection { task_context?: TaskContext; error?: string; mode: string; topic?: string; indicator_ids: string[]; reasons: unknown[]; limitations: string[] }
+interface Selection { task_context?: TaskContext; error?: string; mode: string; topic?: string; indicator_ids: string[]; reasons: unknown[]; limitations: string[]; trace?: AgentTrace[]; runtime?: TraceRuntime; truncated?: boolean; diagnostics?: TraceDiagnostics | null }
 interface Run { id: ID; status: string; snapshot_id: ID; created_at: string; summary: Summary; selection: Selection }
 interface Evidence { id: ID; indicator_id: string; indicator_name: string; value: string | number | null; value_display: string; unit: string; rank: number | null; population: number | null; data_date: string; rule_id: ID; rule_name: string; rule_kind: string; reason: string; quality_status: string }
 interface Receipt { id: ID; channel: string; status: string; created_at: string }
@@ -22,7 +23,7 @@ interface Analysis {
   mode: string; facts: string[]; hypotheses: string[]; checks: string[]; limitations: string[];
   queried_evidence?: QueryEvidence[];
   evidence_references?: { checks: { text: string; evidence_ids: string[] }[] };
-  trace?: { event: string; tool?: string; status?: string; transport?: string }[];
+  trace?: AgentTrace[]; runtime?: TraceRuntime; truncated?: boolean;
 }
 interface ImportResult { snapshot_id: ID; row_count: number; warnings: string[] }
 // 列表只含摘要；打开详情后，接口才返回 evidence、analysis 与 letter。
@@ -44,7 +45,7 @@ interface RiskCase {
 interface Bootstrap { meta: { app_name: string; version: string; demo: boolean; agent_mode: string; data_date: string; rank_note: string }; summary: { region_count: number; org_count: number; indicator_count: number; enabled_rule_count: number; case_count: number; letter_count: number }; organizations: Organization[]; indicators: Indicator[]; rules: Rule[]; snapshots: Snapshot[]; latest_run: Run | null }
 
 createApp({
-  components: { CodeExploration },
+  components: { CodeExploration, TracePanel },
   setup() {
     // boot 保存目录和概览；当前查看的运行与表单选择分开，切换快照不会改写历史结果。
     const boot = ref<Bootstrap | null>(null);
@@ -66,6 +67,7 @@ createApp({
     const query = ref('');
     const selectedCase = ref<RiskCase | null>(null);
     const drawerTab = ref('evidence');
+    const traceWide = ref(true);
     const letter = ref<Letter | null>(null);
     const letterText = ref('');
     const ruleInputs = ref<Record<string, string>>({});
@@ -189,9 +191,32 @@ createApp({
       cases.value = await api<RiskCase[]>(`/api/cases?run_id=${encodeURIComponent(String(runId))}`);
     }
 
+    // HTTP失败仍可能已保存诊断；依据服务端run_id恢复任务，不用上一次运行代替。
+    async function submitRun(body: unknown): Promise<Run> {
+      try { return await send<Run>('/api/runs', body); }
+      catch (err) {
+        const detail = err instanceof ApiError ? err.detail : null;
+        if (detail && typeof detail === 'object' && 'run_id' in detail && typeof detail.run_id === 'string') {
+          try {
+            await loadBootstrap();
+            const failed = runs.value.find(run => String(run.id) === detail.run_id);
+            if (!failed) throw new Error('未找到服务端返回的失败任务，请刷新运行记录。');
+            currentRun.value = failed;
+            showChecks.value = false;
+            checks.value = [];
+            await loadCases(failed.id);
+            tab.value = 'monitor';
+          } catch (reloadError) {
+            throw new Error(`${(err as ApiError).message}；失败记录加载失败：${reloadError instanceof Error ? reloadError.message : String(reloadError)}`);
+          }
+        }
+        throw err;
+      }
+    }
+
     const runAnalysis = () => action('run', async () => {
       if (!snapshotId.value) throw new Error('请先选择一个可用数据快照。');
-      const run = await send<Run>('/api/runs', { snapshot_id: snapshotId.value, risk_topic: topic.value });
+      const run = await submitRun({ snapshot_id: snapshotId.value, risk_topic: topic.value });
       currentRun.value = run;
       showChecks.value = false;
       checks.value = [];
@@ -208,7 +233,7 @@ createApp({
     const retryRun = (run: Run) => action('retry', async () => {
       const context = run.selection.task_context;
       if (!context) throw new Error('旧任务没有固定上下文，请重新运行监测。');
-      const result = await send<Run>('/api/runs', {
+      const result = await submitRun({
         snapshot_id: context.snapshot_id, risk_topic: context.topic,
         org_scope: context.org_scope, retry: true
       });
@@ -316,7 +341,7 @@ createApp({
       notify(`已导入 ${number(result.row_count)} 条记录，形成独立数据快照。`);
     });
     onMounted(initialize);
-    return { boot, loading, fatal, error, toast, busy, tab, nav, pageTitle, snapshotId, selectedSnapshot, currentRunSnapshot, topic, currentRun, runs, cases, checks, showChecks, checkFilter, visibleChecks, activeSummary, visibleCases, regions, societies, regionFilter, query, selectedCase, drawerTab, letter, letterText, letterDirty, ruleInputs, fileInput, importFile, importResult, orgQuery, indicatorQuery, visibleIndicators, configuredRules, coverageWidth, number, shortId, dateTime, indicatorName, snapshotName, ruleKind, agentModeLabel, selectionMethod, agentModeDescription, statusName, statusClass, reasonText, children, initialize, runAnalysis, retryRun, openRun, viewChecks, openCase, closeCase, createDraft, saveLetter, approveLetter, simulateSend, saveRule, toggleRule, chooseFile, upload };
+    return { boot, loading, fatal, error, toast, busy, tab, nav, pageTitle, snapshotId, selectedSnapshot, currentRunSnapshot, topic, currentRun, runs, cases, checks, showChecks, checkFilter, visibleChecks, activeSummary, visibleCases, regions, societies, regionFilter, query, selectedCase, drawerTab, traceWide, letter, letterText, letterDirty, ruleInputs, fileInput, importFile, importResult, orgQuery, indicatorQuery, visibleIndicators, configuredRules, coverageWidth, number, shortId, dateTime, indicatorName, snapshotName, ruleKind, agentModeLabel, selectionMethod, agentModeDescription, statusName, statusClass, reasonText, children, initialize, runAnalysis, retryRun, openRun, viewChecks, openCase, closeCase, createDraft, saveLetter, approveLetter, simulateSend, saveRule, toggleRule, chooseFile, upload };
   },
   template: `
     <div v-if="loading" class="initial-loading"><div class="loader"></div><p>正在加载风险监测工作台…</p></div>
@@ -353,6 +378,11 @@ createApp({
             <section v-else class="panel empty-state"><div class="empty-orbit"><span>↗</span></div><h2>从第一批数据开始</h2><p>已准备 {{ boot.summary.org_count }} 家行社的合成数据和三类规则。<br>运行监测，查看触发依据并试用提示函流程。</p><button class="button primary" @click="runAnalysis" :disabled="!!busy">运行首次监测</button><small>占比阈值尚未配置时，不会被默认为正常。</small></section>
 
             <div v-if="currentRun" class="bottom-grid"><section class="panel coverage-panel"><div class="panel-title"><h2>检查覆盖</h2><span class="subtle">本次运行</span></div><div class="coverage-bar"><span class="normal" :style="{width:coverageWidth('normal')}"></span><span class="triggered" :style="{width:coverageWidth('triggered')}"></span><span class="insufficient" :style="{width:coverageWidth('insufficient')}"></span></div><div class="coverage-legend"><span><i class="normal"></i>未触发 <b>{{ number(activeSummary.normal) }}</b></span><span><i class="triggered"></i>已触发 <b>{{ number(activeSummary.triggered) }}</b></span><span><i class="insufficient"></i>无法判断 <b>{{ number(activeSummary.insufficient) }}</b></span></div><div class="coverage-note"><span>待配置 {{ number(activeSummary.unconfigured) }} 项</span><span>不适用 {{ number(activeSummary.not_applicable) }} 项</span><button class="text-button" @click="viewChecks" :disabled="!!busy">{{ showChecks?'收起待核查项':'查看待核查项' }} →</button></div></section><section class="panel selection-panel"><div class="panel-title"><h2>辅助指标选择</h2><span class="tag muted">{{ selectionMethod(currentRun.selection?.mode) }}</span></div><div class="selection-tags"><span v-for="id in (currentRun.selection?.indicator_ids || [])" :key="id">{{ indicatorName(id) }}</span><span v-if="!currentRun.selection?.indicator_ids?.length">本次未补充辅助指标</span></div><p>{{ agentModeDescription(currentRun.selection?.mode) }}</p></section></div>
+            <details v-if="currentRun" :key="'run-trace-'+currentRun.id" class="panel trace-disclosure" :open="currentRun.status==='failed'">
+              <summary>运行轨迹与诊断 <span class="subtle">辅助指标选择 · 工具调用 · 模型记录</span></summary>
+              <trace-panel :trace="currentRun.selection.trace" :runtime="currentRun.selection.runtime" :mode="currentRun.selection.mode" :truncated="currentRun.selection.truncated" title="辅助指标选择阶段" />
+              <trace-panel v-if="currentRun.status==='failed' || currentRun.selection.diagnostics" :trace="currentRun.selection.diagnostics?.trace" :runtime="currentRun.selection.diagnostics?.runtime" :mode="currentRun.selection.mode" :error="currentRun.selection.error" :truncated="currentRun.selection.diagnostics?.truncated" title="失败诊断" />
+            </details>
             <section v-if="showChecks && currentRun" class="panel diagnostic-panel"><div class="panel-title"><div><h2>待核查的检查项</h2><p>这些记录不计为“未触发”，也不会据此直接生成风险函。</p></div><select v-model="checkFilter" aria-label="检查状态"><option value="insufficient">数据不足 / 口径不符</option><option value="unconfigured">规则待配置</option></select></div><div v-if="!visibleChecks.length" class="empty-state compact"><h3>当前类型没有待核查项</h3></div><div v-else class="table-scroll"><table><thead><tr><th>行社</th><th>指标</th><th>原因</th></tr></thead><tbody><tr v-for="item in visibleChecks" :key="String(item.org_id)+'-'+String(item.rule_id)"><td>{{ item.org_name }}</td><td>{{ indicatorName(item.indicator_id) }}</td><td class="description-cell">{{ item.reason }}</td></tr></tbody></table></div></section>
           </section>
 
@@ -376,15 +406,15 @@ createApp({
             <section class="panel"><div class="panel-title"><h2>数据快照</h2><span class="subtle">{{ boot.snapshots.length }} 个批次</span></div><div class="table-scroll"><table><thead><tr><th>快照名称</th><th>数据日期</th><th>来源</th><th>记录数</th><th>状态</th><th></th></tr></thead><tbody><tr v-for="snapshot in boot.snapshots" :key="snapshot.id"><td><strong>{{ snapshot.name }}</strong><small>{{ shortId(snapshot.id) }}</small></td><td>{{ snapshot.data_date }}</td><td><span :class="['tag',snapshot.is_demo?'blue':'muted']">{{ snapshot.is_demo?'合成样例':snapshot.source }}</span></td><td>{{ number(snapshot.row_count) }}</td><td><span class="tag green">{{ statusName(snapshot.status) }}</span></td><td><button class="text-button" @click="snapshotId=String(snapshot.id);tab='monitor'">使用快照 →</button></td></tr></tbody></table></div></section>
           </section>
 
-          <section v-if="tab==='runs'" class="runs-page"><div class="info-banner"><span class="info-mark">i</span><p>相同快照、规则版本与风险主题重复运行会复用结果。修改配置或主题后重新运行，形成新的执行记录。</p></div><section class="panel"><div class="panel-title"><h2>历史监测批次</h2><span class="subtle">{{ runs.length }} 次</span></div><div v-if="!runs.length" class="empty-state compact"><span class="empty-icon">◷</span><h3>还没有运行记录</h3><p>首次监测完成后，可在这里查看覆盖情况和风险事项。</p><button class="button secondary" @click="tab='monitor'">返回工作台</button></div><div v-else class="run-list"><article v-for="run in runs" :key="run.id" class="run-item"><div class="run-item-heading"><div><strong>{{ snapshotName(run.snapshot_id) }}</strong><p>{{ dateTime(run.created_at) }} · {{ shortId(run.id) }} · {{ agentModeLabel(run.selection.mode) }}</p></div><span :class="['tag',statusClass(run.status)]">{{ statusName(run.status) }}</span></div><div class="run-metrics"><div><span>风险行社</span><b>{{ number(run.summary.case_count) }}</b></div><div><span>规则命中</span><b>{{ number(run.summary.triggered) }}</b></div><div><span>未触发</span><b>{{ number(run.summary.normal) }}</b></div><div><span>无法判断</span><b class="warning">{{ number(run.summary.insufficient) }}</b></div><div><span>待配置</span><b>{{ number(run.summary.unconfigured) }}</b></div><button v-if="run.status==='failed'" class="button secondary small" @click="retryRun(run)" :disabled="!!busy">重试分析</button><button class="button secondary small" @click="openRun(run)" :disabled="!!busy">查看结果 →</button></div></article></div></section></section>
+          <section v-if="tab==='runs'" class="runs-page"><div class="info-banner"><span class="info-mark">i</span><p>相同快照、规则版本与风险主题重复运行会复用结果。修改配置或主题后重新运行，形成新的执行记录。</p></div><section class="panel"><div class="panel-title"><h2>历史监测批次</h2><span class="subtle">{{ runs.length }} 次</span></div><div v-if="!runs.length" class="empty-state compact"><span class="empty-icon">◷</span><h3>还没有运行记录</h3><p>首次监测完成后，可在这里查看覆盖情况和风险事项。</p><button class="button secondary" @click="tab='monitor'">返回工作台</button></div><div v-else class="run-list"><article v-for="run in runs" :key="run.id" class="run-item"><div class="run-item-heading"><div><strong>{{ snapshotName(run.snapshot_id) }}</strong><p>{{ dateTime(run.created_at) }} · {{ shortId(run.id) }} · {{ agentModeLabel(run.selection.mode) }}</p></div><span :class="['tag',statusClass(run.status)]">{{ statusName(run.status) }}</span></div><div class="run-metrics"><div><span>风险行社</span><b>{{ number(run.summary.case_count) }}</b></div><div><span>规则命中</span><b>{{ number(run.summary.triggered) }}</b></div><div><span>未触发</span><b>{{ number(run.summary.normal) }}</b></div><div><span>无法判断</span><b class="warning">{{ number(run.summary.insufficient) }}</b></div><div><span>待配置</span><b>{{ number(run.summary.unconfigured) }}</b></div><button v-if="run.status==='failed'" class="button secondary small" @click="retryRun(run)" :disabled="!!busy">重试分析</button><button class="button secondary small" @click="openRun(run)" :disabled="!!busy">查看结果 →</button></div><details class="trace-disclosure run-trace-disclosure"><summary>查看运行轨迹与诊断</summary><trace-panel :trace="run.selection.trace" :runtime="run.selection.runtime" :mode="run.selection.mode" :truncated="run.selection.truncated" title="辅助指标选择阶段" /><trace-panel v-if="run.status==='failed' || run.selection.diagnostics" :trace="run.selection.diagnostics?.trace" :runtime="run.selection.diagnostics?.runtime" :mode="run.selection.mode" :error="run.selection.error" :truncated="run.selection.diagnostics?.truncated" title="失败诊断" /></details></article></div></section></section>
           <footer class="page-footer"><span>风险提示 · 行社级测试版</span><span>内置数据为合成样例，所有下发均为模拟。</span></footer>
         </div>
       </main>
 
       <div v-if="selectedCase" class="drawer-backdrop" @click.self="closeCase">
-        <section class="case-drawer" role="dialog" aria-modal="true" :aria-label="selectedCase.org_name+'风险详情'">
+        <section :class="['case-drawer', {'case-drawer-wide':drawerTab==='trace' && traceWide}]" role="dialog" aria-modal="true" :aria-label="selectedCase.org_name+'风险详情'">
           <header class="drawer-header"><div><div class="eyebrow">RISK CASE</div><h2>{{ selectedCase.org_name }}</h2><p>{{ selectedCase.region_name }} · 数据截至 {{ selectedCase.data_date }}</p></div><button class="close-button" @click="closeCase" aria-label="关闭详情">×</button></header>
-          <div class="drawer-tabs"><button :class="{active:drawerTab==='evidence'}" @click="drawerTab='evidence'">证据与分析 <span>{{ selectedCase.evidence?.length || 0 }}</span></button><button :class="{active:drawerTab==='letter'}" @click="drawerTab='letter'">风险提示函 <span v-if="letter">v{{ letter.revision }}</span></button></div>
+          <div class="drawer-tabs" role="group" aria-label="风险详情视图"><button :class="{active:drawerTab==='evidence'}" :aria-pressed="drawerTab==='evidence'" @click="drawerTab='evidence'">证据与分析 <span>{{ selectedCase.evidence?.length || 0 }}</span></button><button :class="{active:drawerTab==='trace'}" :aria-pressed="drawerTab==='trace'" @click="drawerTab='trace'">运行轨迹</button><button :class="{active:drawerTab==='letter'}" :aria-pressed="drawerTab==='letter'" @click="drawerTab='letter'">风险提示函 <span v-if="letter">v{{ letter.revision }}</span></button><button v-if="drawerTab==='trace'" class="trace-expand" :aria-pressed="traceWide" @click="traceWide=!traceWide">{{ traceWide?'收窄视图':'展开视图' }}</button></div>
           <div class="drawer-body">
             <div v-if="error" class="alert error" role="alert"><strong>操作未完成</strong><span>{{ error }}</span><button @click="error=''" aria-label="关闭错误提示">×</button></div>
             <div v-if="drawerTab==='evidence'">
@@ -400,6 +430,7 @@ createApp({
               </section>
               <section v-if="selectedCase.analysis" class="analysis-section"><div class="panel-title"><h3>分析与核查建议</h3><span class="tag muted">{{ agentModeLabel(selectedCase.analysis.mode) }}</span></div><div v-if="selectedCase.analysis.facts?.length" class="analysis-group"><h4>已知事实</h4><ul><li v-for="fact in selectedCase.analysis.facts" :key="fact">{{ fact }}</li></ul></div><div v-if="selectedCase.analysis.hypotheses?.length" class="analysis-group"><h4>待核查解释</h4><ul><li v-for="hypothesis in selectedCase.analysis.hypotheses" :key="hypothesis">{{ hypothesis }}</li></ul></div><div v-if="selectedCase.analysis.checks?.length" class="analysis-group"><h4>建议核查</h4><ol><li v-for="(check, index) in selectedCase.analysis.checks" :key="check">{{ check }}<small v-if="selectedCase.analysis.evidence_references?.checks[index]">引用：{{ selectedCase.analysis.evidence_references.checks[index].evidence_ids.join('、') }}</small></li></ol></div><div v-if="selectedCase.analysis.limitations?.length" class="detail-note"><p v-for="limitation in selectedCase.analysis.limitations" :key="limitation">{{ limitation }}</p></div></section>
             </div>
+            <trace-panel v-if="drawerTab==='trace'" :key="selectedCase.id" :trace="selectedCase.analysis?.trace" :runtime="selectedCase.analysis?.runtime" :mode="selectedCase.analysis?.mode" :truncated="selectedCase.analysis?.truncated" title="行社分析轨迹" />
             <div v-if="drawerTab==='letter'">
               <div v-if="!letter" class="empty-state letter-empty"><div class="empty-orbit"><span>▤</span></div><h3>依据当前证据生成提示函</h3><p>使用通用测试模板。正式模板接入后，可沿用同一份证据与审核流程。</p><button class="button primary" @click="createDraft" :disabled="!!busy">{{ busy==='draft'?'正在生成…':'生成提示函草稿' }}</button></div>
               <template v-else>
@@ -412,7 +443,7 @@ createApp({
               </template>
             </div>
           </div>
-          <footer class="drawer-footer"><template v-if="drawerTab==='evidence'"><span>事实与推断分别记录</span><button class="button primary" @click="letter?drawerTab='letter':createDraft()" :disabled="!!busy">{{ letter?'查看提示函':'生成提示函' }} →</button></template><template v-else-if="letter"><button class="button secondary" @click="saveLetter" :disabled="!!busy || !letterDirty || letter.status==='simulated_sent'">保存修改</button><div class="footer-actions"><button v-if="letter.status==='draft'" class="button primary" @click="approveLetter" :disabled="!!busy || letterDirty">审核通过</button><button v-else-if="letter.status==='approved'" class="button primary" @click="simulateSend" :disabled="!!busy || letterDirty">模拟下发</button><span v-else class="simulation-complete">✓ 已完成模拟流程</span></div></template><template v-else><span>正式模板尚未接入</span><button class="button secondary" @click="drawerTab='evidence'">返回证据</button></template></footer>
+          <footer class="drawer-footer"><template v-if="drawerTab==='evidence'"><span>事实与推断分别记录</span><button class="button primary" @click="letter?drawerTab='letter':createDraft()" :disabled="!!busy">{{ letter?'查看提示函':'生成提示函' }} →</button></template><template v-else-if="drawerTab==='trace'"><span>展示本次分析已保存的调用记录</span><button class="button secondary" @click="drawerTab='evidence'">返回证据</button></template><template v-else-if="letter"><button class="button secondary" @click="saveLetter" :disabled="!!busy || !letterDirty || letter.status==='simulated_sent'">保存修改</button><div class="footer-actions"><button v-if="letter.status==='draft'" class="button primary" @click="approveLetter" :disabled="!!busy || letterDirty">审核通过</button><button v-else-if="letter.status==='approved'" class="button primary" @click="simulateSend" :disabled="!!busy || letterDirty">模拟下发</button><span v-else class="simulation-complete">✓ 已完成模拟流程</span></div></template><template v-else><span>正式模板尚未接入</span><button class="button secondary" @click="drawerTab='evidence'">返回证据</button></template></footer>
         </section>
       </div>
       <div v-if="toast" class="toast" role="status"><span>✓</span>{{ toast }}</div>
