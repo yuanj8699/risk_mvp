@@ -34,7 +34,7 @@ try {
   const safe = error instanceof RiskAgentError
     ? error
     : new RiskAgentError("RUNTIME_ERROR", "Pi运行时执行失败；请检查已安装依赖与本地配置");
-  const response: AgentErrorResponse = { error: { code: safe.code, message: safe.message } };
+  const response: AgentErrorResponse = { error: { code: safe.code, message: safe.message }, diagnostics: safe.diagnostics ?? { trace: [] } };
   process.stdout.write(JSON.stringify(response) + "\n");
   process.exitCode = 1;
 } finally {

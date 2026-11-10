@@ -5,6 +5,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { BusinessToolError, type BusinessMcpClient } from "./mcp-business.js";
 import type { AgentTrace, ZeroCandidates } from "./contracts.js";
+import { traceId, sanitize, safeError } from "./model-tap.js";
 
 export const JS_READ_TOOLS = ["check_risks", "search_indicators"] as const;
 export const RISK_JS_LIMITS = { code: 32 * 1024, args: 32 * 1024, response: 64 * 1024, output: 16 * 1024, value: 16 * 1024, totalResponses: 256 * 1024, calls: 16, timeoutMs: 10000, heap: 32 * 1024 * 1024 };
@@ -32,6 +33,7 @@ type Options = {
   trace: AgentTrace[];
   onFatal: (error: BusinessToolError) => void;
   onZero: (result: ZeroCandidates) => void;
+  secrets?: string[];
 };
 
 export function createRiskJsTool(options: Options): { tool: AgentTool; metrics: RiskJsMetrics } {
@@ -44,7 +46,8 @@ export function createRiskJsTool(options: Options): { tool: AgentTool; metrics: 
     name: "risk_js", label: "编排只读风险查询",
     description: `在32MiB QuickJS中组合只读工具，10秒内返回{org_ids,indicator_ids,history}小计划。宿主登记为只读计划文件，后续Python只读取返回path。不能访问文件、网络或执行Python；查询额度全任务共享。\n${renderDeclarations({ tools: declarations })}`,
     parameters: Type.Object({ code: Type.String({ minLength: 1, maxLength: RISK_JS_LIMITS.code }) }, { additionalProperties: false }),
-    execute: async (_, args, agentSignal) => {
+    execute: async (parentId, args, agentSignal) => {
+      const parent = options.trace.find(entry => entry.id === parentId);
       const code = (args as { code: string }).code;
       bounded(code, RISK_JS_LIMITS.code, "JS源码");
       const remaining = Math.min(RISK_JS_LIMITS.timeoutMs, options.deadline - Date.now());
@@ -62,7 +65,7 @@ export function createRiskJsTool(options: Options): { tool: AgentTool; metrics: 
         execute: (raw, callContext) => {
           const operation = (async () => {
             const started = performance.now();
-            const entry: AgentTrace = { event: "tool", transport: "mcp", parent_tool: "risk_js", tool: definition.name, status: "error" };
+            const entry: AgentTrace = { id: traceId(), parent_id: parentId, phase: parent?.phase, case_key: parent?.case_key, started_at: new Date().toISOString(), event: "tool", transport: "mcp", parent_tool: "risk_js", tool: definition.name, status: "running" };
             options.trace.push(entry);
             metrics.nested_calls++;
             try {
@@ -70,7 +73,7 @@ export function createRiskJsTool(options: Options): { tool: AgentTool; metrics: 
               bounded(raw, RISK_JS_LIMITS.args, "查询参数");
               const checked = schemas.get(definition.name)!(raw);
               if (!checked.valid) throw new Error(`查询参数不符合工具schema：${checked.errorMessage}`);
-              entry.arguments = checked.data;
+              entry.arguments = sanitize(checked.data, options.secrets);
               metrics.host_calls++;
               const result = await options.mcp.call(definition.name as typeof JS_READ_TOOLS[number], checked.data, AbortSignal.any([signal, callContext.signal]));
               const size = bytes(result);
@@ -85,6 +88,7 @@ export function createRiskJsTool(options: Options): { tool: AgentTool; metrics: 
               entry.status = "ok";
               return result;
             } catch (error) {
+              entry.status = "error"; entry.error = safeError(error, options.secrets);
               if (error instanceof BusinessToolError && FATAL_CODES.has(error.code)) { fatal = error; options.onFatal(error); }
               throw error;
             } finally {
@@ -117,10 +121,11 @@ export function createRiskJsTool(options: Options): { tool: AgentTool; metrics: 
         if (!parsed.data.org_ids.length && !receiptId) throw new Error("空候选计划必须来自本次实际check_risks覆盖回执");
         metrics.host_calls++;
         const started = performance.now();
-        const entry: AgentTrace = { event: "tool", transport: "mcp", parent_tool: "risk_js", tool: "register_query_plan", status: "error" };
+        const entry: AgentTrace = { id: traceId(), parent_id: parentId, phase: parent?.phase, case_key: parent?.case_key, started_at: new Date().toISOString(), event: "tool", transport: "mcp", parent_tool: "risk_js", tool: "register_query_plan", status: "running", arguments: sanitize({ plan: parsed.data, check_receipt_id: receiptId }, options.secrets) };
         options.trace.push(entry);
         let registration: Record<string, unknown>;
         try { registration = await options.mcp.call("register_query_plan", { plan: parsed.data, ...(receiptId ? { check_receipt_id: receiptId } : {}) }, signal); }
+        catch (error) { entry.status = "error"; entry.error = safeError(error, options.secrets); throw error; }
         finally { entry.duration_ms = performance.now() - started; }
         entry.response_bytes = bytes(registration);
         bounded(registration, RISK_JS_LIMITS.response, "计划登记响应");
