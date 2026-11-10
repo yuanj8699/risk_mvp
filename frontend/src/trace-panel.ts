@@ -113,12 +113,12 @@ export function buildTraceTimeline(rows: TraceRow[], groups: TraceGroup[], view:
       ticks.push({ left: (groupIndex + .5) / groups.length * 100,
         label: group.request?.entry.request === undefined ? '未记录轮次' : `第 ${group.request.entry.request} 轮` });
     });
-    note = '按轮次分区，轮内调用等距排列，不表示耗时比例。';
+    note = '按轮次等距排列，不代表耗时。';
   } else {
     rows.forEach((row, index) => positions.set(row.key, { left: (index + .08) / rows.length * 100, width: .75 / rows.length * 100, point: false }));
     const indexes = [...new Set([0, Math.floor((rows.length - 1) / 2), rows.length - 1])];
     ticks = indexes.map(index => ({ left: (index + .5) / rows.length * 100, label: `第 ${index + 1} 项` }));
-    note = '按已保存调用次序等距排列，不表示耗时比例。';
+    note = '按调用顺序排列，不代表耗时。';
   }
   if (ticks.length > 7) ticks = ticks.filter((_, index) => index % Math.ceil(ticks.length / 6) === 0 || index === ticks.length - 1);
   return { positions, ticks, note };
@@ -144,7 +144,7 @@ export default defineComponent({
     const entryElements = new Map<string, HTMLDetailsElement>();
     const filters = [{ id: 'all', label: '全部' }, { id: 'tool', label: '工具' }, { id: 'request', label: '模型' }, { id: 'failed', label: '失败' }];
     const views = [{ id: 'duration', label: '时长' }, { id: 'rounds', label: '轮次' }, { id: 'calls', label: '调用' }];
-    const lanes = [{ id: 'input', label: '请求输入' }, { id: 'request', label: '模型' }, { id: 'tool', label: '工具' }];
+    const lanes = [{ id: 'input', label: '请求' }, { id: 'request', label: '模型' }, { id: 'tool', label: '工具' }];
     const failed = (entry: AgentTrace) => entry.status === 'error' || entry.status === 'cancelled' || Boolean(entry.error) || (recordedNumber(entry.exit_code) && entry.exit_code !== 0);
     const rows = computed(() => orderTrace(props.trace));
     const groups = computed(() => groupTrace(rows.value));
@@ -164,7 +164,6 @@ export default defineComponent({
         top: lane === 'tool' && row.depth > 0 ? '10px' : '4px' };
     };
     const demo = computed(() => props.mode === 'pi-demo' || props.runtime?.mode === 'demo');
-    const modeLabel = computed(() => demo.value ? '离线演示 · 未调用真实模型' : props.runtime?.llm_connected === false || props.mode === 'template' ? '本记录未调用真实模型' : props.mode === 'pi-model' || props.runtime?.llm_connected === true ? '模型模式' : '模型连接状态未记录');
     const count = (event: string) => props.trace.filter(entry => entry.event === event).length;
     const entryTitle = (entry: AgentTrace) => entry.event === 'request' ? entry.model_id || props.runtime?.model || '模型请求' : entry.tool || '工具调用';
     const status = (entry: AgentTrace) => ({ ok: '成功', error: '失败', cancelled: '已取消', running: '进行中' }[entry.status ?? ''] ?? (failed(entry) ? '失败' : '状态未记录'));
@@ -203,20 +202,19 @@ export default defineComponent({
       element.querySelector('summary')?.focus({ preventScroll: true });
     };
     return { filter, filters, search, view, views, lanes, rows, visibleRows, visibleGroups, timeline, marks, markerStyle, markerLabel, selectedKey, registerRow, locate,
-      modeLabel, demo, failed, count, entryTitle, rowSummary, roundTitle, status, startTime, formatted, errorText, retryText, recoveryStatus, phaseLabel, traceNumber, traceDuration, traceBytes };
+      demo, failed, count, entryTitle, rowSummary, roundTitle, status, startTime, formatted, errorText, retryText, recoveryStatus, phaseLabel, traceNumber, traceDuration, traceBytes };
   },
   template: `
     <section class="trace-panel" :aria-label="title">
-      <header class="trace-heading"><h3>{{ title }}</h3><span>{{ modeLabel }}</span></header>
       <p v-if="error" class="trace-failure" role="status">{{ error }}</p>
       <p v-if="truncated || runtime?.trace_truncated===true" class="trace-note">轨迹记录达到保存上限，以下仅为已保存部分。</p>
       <template v-if="trace.length">
         <div class="trace-toolbar"><div class="trace-views" role="group" aria-label="轨迹坐标视图"><button v-for="item in views" :key="item.id" type="button" :class="{active:view===item.id}" :aria-pressed="view===item.id" @click="view=item.id">{{ item.label }}<span>{{ item.id==='duration' ? traceDuration(runtime?.duration_ms) : item.id==='rounds' ? count('request') : count('tool') }}</span></button></div><label class="trace-search"><span>搜索</span><input v-model="search" type="search" placeholder="工具、参数、错误、证据" aria-label="搜索运行轨迹" /></label></div>
-        <div class="trace-timeline" aria-label="请求输入、模型与工具时间泳道">
+        <div class="trace-timeline" aria-label="请求开始、模型与工具时间泳道" :title="timeline.note">
           <div v-for="lane in lanes" :key="lane.id" class="trace-lane"><span class="trace-lane-label"><i :class="lane.id"></i>{{ lane.label }}</span><div class="trace-lane-track"><button v-for="row in marks(lane.id)" :key="row.key" type="button" :class="['trace-lane-mark',lane.id,{'failed':lane.id!=='input' && failed(row.entry),'point':lane.id==='input' || timeline.positions.get(row.key)?.point}]" :style="markerStyle(row,lane.id)" :title="markerLabel(row)" :aria-label="'定位'+markerLabel(row)" @click="locate(row)"></button></div></div>
           <div class="trace-axis"><span v-for="(tick,index) in timeline.ticks" :key="index" :style="{left:tick.left+'%'}">{{ tick.label }}</span></div>
         </div>
-        <p class="trace-timeline-note">{{ timeline.note }} 输入泳道仅标记模型请求开始。</p>
+        <p v-if="view!=='duration' || timeline.note.includes('未记录') || timeline.note.includes('不完整')" class="trace-timeline-note">{{ timeline.note }}</p>
         <div class="trace-controls"><div class="trace-filters" role="group" aria-label="筛选轨迹"><button v-for="item in filters" :key="item.id" type="button" :class="{active:filter===item.id}" :aria-pressed="filter===item.id" @click="filter=item.id">{{ item.label }}</button></div><span>显示 {{ visibleRows.length }} / {{ trace.length }} 项</span></div>
         <div v-if="visibleGroups.length" class="trace-rounds">
           <section v-for="group in visibleGroups" :key="group.key" class="trace-round">
@@ -244,7 +242,7 @@ export default defineComponent({
         </div>
         <p v-else class="trace-empty">没有匹配记录。可调整搜索词或筛选条件。</p>
       </template>
-      <p v-else class="trace-empty">这条记录未保存可展示的运行轨迹。旧记录缺失的耗时、tokens 和重试信息不会补算。</p>
+      <p v-else class="trace-empty">本任务尚无轨迹记录。</p>
     </section>
   `,
 });
