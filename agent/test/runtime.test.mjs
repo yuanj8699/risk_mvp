@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { runRequest, toolStream, errorStream, validateRequest } from "../dist/runtime.js";
+import { runRequest, runAgent, RiskAgentError, toolStream, errorStream, validateRequest } from "../dist/runtime.js";
 
 const selection = {
   operation: "select", topic: "信用风险",
@@ -76,6 +76,42 @@ test("repeated requests and tool calls stop at the configured budgets", async ()
   const streamFn = model => toolStream(model, "read_indicator_catalog", {});
   await assert.rejects(runRequest(selection, { ...demo, streamFn, limits: { requests: 2 } }), { code: "BUDGET_EXCEEDED" });
   await assert.rejects(runRequest(selection, { ...demo, limits: { tools: 1 } }), { code: "BUDGET_EXCEEDED" });
+});
+
+test("fatal errors prevent later tools in the same real Pi batch from executing", async () => {
+  const model = { id: "fixed-batch", name: "fixed-batch", api: "openai-completions", provider: "test", baseUrl: "http://127.0.0.1/unused", reasoning: false, input: ["text"], contextWindow: 10000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+  let fatal;
+  let sideEffects = 0;
+  // 只替代模型响应；真实Pi负责同轮批量工具的校验、派发与终止。
+  const stream = () => {
+    const events = createAssistantMessageEventStream();
+    const message = {
+      role: "assistant", api: model.api, provider: model.provider, model: model.id,
+      content: ["risk_js", "write_task_file", "execute_python"].map((name, index) => ({ type: "toolCall", id: String(index), name, arguments: {} })),
+      stopReason: "toolUse", timestamp: Date.now(),
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    };
+    events.push({ type: "done", reason: "toolUse", message });
+    return events;
+  };
+  const tools = ["risk_js", "write_task_file", "execute_python"].map(name => ({
+    name, label: name, description: "回归用例；不访问文件或Docker",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute: async () => {
+      if (name === "risk_js") {
+        fatal = new RiskAgentError("QUERY_BUDGET_EXCEEDED", "任务查询额度已耗尽");
+        throw fatal;
+      }
+      sideEffects++;
+      return { content: [{ type: "text", text: "executed" }], details: {} };
+    },
+  }));
+  await assert.rejects(runAgent(
+    { mode: "demo", env: {}, model, stream, limits: { requests: 3, tools: 5, timeoutMs: 1000, batchTimeoutMs: 1000 } },
+    tools, "验证致命错误之后不再执行同轮后续操作", () => undefined, 1000,
+    { requestContext: () => ({}), fatal: () => fatal, cancel: () => {}, demoStream: stream },
+  ), { code: "QUERY_BUDGET_EXCEEDED" });
+  assert.equal(sideEffects, 0, "fatal之后不得执行写文件或Python工具");
 });
 
 test("unresponsive streams respect the wall-clock timeout", async () => {

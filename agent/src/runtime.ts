@@ -269,6 +269,9 @@ export async function runAgent<T>(
       }
     },
     beforeToolCall: async () => {
+      // terminate只影响整轮结束；同轮排队工具仍需在派发前拦住已记录的致命错误。
+      failure ??= scope?.fatal();
+      if (failure) return { block: true, reason: failure.message, terminate: true };
       if (scope?.done?.()) return { block: true, reason: "本任务已形成终止结果，不再执行后续工具", terminate: true };
       if (++toolCalls > cfg.limits.tools) {
         failure = new RiskAgentError("BUDGET_EXCEEDED", "Pi Agent工具调用次数达到上限");

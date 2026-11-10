@@ -157,28 +157,65 @@ def test_query_deadline_interrupts_sql_before_first_row_and_resets_connection(ap
 def test_mcp_cancel_waits_for_real_sql_to_stop_before_releasing_slot(api, monkeypatch):
     import asyncio
     import threading
+    from fastmcp import Client
     from backend import services, mcp_server
-    from backend.models import QueryOperation, SessionLocal
+    from backend.models import QueryBudgetLedger, QueryOperation, SessionLocal
     context = context_for("demo-2026-10-28")
     monkeypatch.setenv("RISK_TASK_RUN_ID", context["run_id"])
+    monkeypatch.setenv("RISK_QUERY_RUN_CONCURRENCY", "1")
+    monkeypatch.setenv("RISK_QUERY_TIMEOUT_SECONDS", "10")
     entered = threading.Event()
-    def expensive(_):
-        with services.read_session() as db:
-            entered.set()
-            return db.connection().exec_driver_sql(
-                "SELECT count(*) FROM observations a CROSS JOIN observations b CROSS JOIN observations c").scalar()
+    release = threading.Event()
+    exited = threading.Event()
+    def wait_in_sql():
+        entered.set()
+        assert release.wait(5)
+        return 1
+    def expensive(*_args, **_kwargs):
+        try:
+            with services.read_session() as db:
+                connection = db.connection()
+                connection.connection.driver_connection.create_function("wait_in_sql", 0, wait_in_sql)
+                try:
+                    connection.exec_driver_sql("SELECT wait_in_sql()").scalar()
+                    return connection.exec_driver_sql(
+                        "SELECT count(*) FROM observations a CROSS JOIN observations b CROSS JOIN observations c").scalar()
+                finally:
+                    connection.connection.driver_connection.create_function("wait_in_sql", 0, None)
+        finally:
+            exited.set()
+    monkeypatch.setattr(services, "query_metrics", expensive)
+
+    def records():
+        with SessionLocal() as db:
+            return list(db.scalars(select(QueryOperation).where(QueryOperation.run_id == context["run_id"])))
+
     async def cancel():
-        task = asyncio.create_task(mcp_server._call("query_metrics", expensive))
-        assert await asyncio.to_thread(entered.wait, 3)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    started = time.monotonic()
+        async with Client(mcp_server.mcp) as client:
+            task = asyncio.create_task(client.call_tool("query_metrics", {"indicator_ids": ["npl_ratio"]}))
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                # 客户端已取消，但真实SQL仍在运行；不能提前让下一次读取占用这个槽位。
+                denied = await client.call_tool("search_indicators", {}, raise_on_error=False)
+                assert json.loads(denied.content[0].text)["error"]["code"] == "QUERY_CONCURRENCY"
+                active = records()
+                assert len(active) == 1 and active[0].finished_at is None
+            finally:
+                release.set()
+            assert await asyncio.to_thread(exited.wait, 3)
+            deadline = time.monotonic() + 3
+            while records()[0].finished_at is None and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            assert records()[0].finished_at is not None
+            valid = await client.call_tool("search_indicators", {"query": "不良"})
+            assert valid.data["items"]
     asyncio.run(cancel())
-    assert time.monotonic() - started < 3
     with SessionLocal() as db:
-        records = list(db.scalars(select(QueryOperation).where(QueryOperation.run_id == context["run_id"])))
-        assert len(records) == 1 and records[0].finished_at is not None
+        assert db.get(QueryBudgetLedger, context["run_id"]).requests_used == 2
+    assert all(row.finished_at is not None for row in records())
 
 
 def test_large_plan_export_reuses_files_without_recharging_physical_rows(large_demo, tmp_path, monkeypatch):

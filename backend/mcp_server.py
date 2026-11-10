@@ -6,19 +6,24 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import json
 import os
 import threading
 
+from anyio import CancelScope
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import Middleware
 
 from . import services
-from .business_operations import read_operation
+from .business_operations import read_operation, read_operation_scope
 from .query_budget import BudgetError
 
 mcp = FastMCP("risk-business", mask_error_details=True, strict_input_validation=True)
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+READ_OPERATIONS = {"search_indicators", "query_metrics", "check_risks", "get_letter_template"}
+_request_cancelled: ContextVar[threading.Event | None] = ContextVar("mcp_read_cancelled", default=None)
 
 
 def _context() -> dict:
@@ -26,6 +31,26 @@ def _context() -> dict:
     if not run_id:
         raise services.ServiceError("SOURCE_ERROR", "MCP未绑定任务身份，无法读取业务数据")
     return services.load_task_context(run_id, os.getenv("RISK_TASK_ORG_ID") or None)
+
+
+class ReadBudgetMiddleware(Middleware):
+    async def on_call_tool(self, context, call_next):
+        operation = context.message.name
+        if operation not in READ_OPERATIONS:
+            return await call_next(context)
+        cancelled = threading.Event()
+        token = _request_cancelled.set(cancelled)
+        try:
+            # 严格参数校验属于请求的一部分；失败也扣费，工具线程复用此票据。
+            with read_operation_scope(_context(), operation, cancelled=cancelled.is_set):
+                return await call_next(context)
+        except (services.ServiceError, BudgetError) as exc:
+            raise ToolError(json.dumps({"error": {"code": exc.code, "message": str(exc)}}, ensure_ascii=False)) from None
+        finally:
+            _request_cancelled.reset(token)
+
+
+mcp.add_middleware(ReadBudgetMiddleware())
 
 
 def _call_sync(operation, action, cancelled):
@@ -38,16 +63,18 @@ def _call_sync(operation, action, cancelled):
 
 async def _call(operation, action):
     """MCP取消传到实际查询；等待工作线程退出后才让请求结束、释放并发占位。"""
-    cancelled = threading.Event()
+    cancelled = _request_cancelled.get() or threading.Event()
     worker = asyncio.create_task(asyncio.to_thread(_call_sync, operation, action, cancelled.is_set))
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
         cancelled.set()
-        try:
-            await asyncio.shield(worker)
-        except ToolError:
-            pass  # 查询已确认退出，取消路径不再向已关闭请求发送业务错误。
+        # MCP使用AnyIO级联取消；仅asyncio.shield仍会在下一次await再次被取消。
+        with CancelScope(shield=True):
+            try:
+                await asyncio.shield(worker)
+            except ToolError:
+                pass  # 查询已确认退出，取消路径不再向已关闭请求发送业务错误。
         raise
 
 
