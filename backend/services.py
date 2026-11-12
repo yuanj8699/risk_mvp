@@ -82,7 +82,8 @@ def observation_issue(obs, metric, snapshot) -> str | None:
     if obs is None or obs.value is None or obs.quality_status != "valid":
         return "指标数据缺失或质量状态不合格"
     lag = (snapshot.data_date - obs.data_date).days
-    allowed_lag = 120 if metric.frequency == "季" else 7
+    # 月频数据在当月通常仍显示上月末值，测试版允许45天；正式阈值需按行内更新周期核定。
+    allowed_lag = {"季": 120, "月": 45}.get(metric.frequency, 7)
     if lag < 0 or lag > allowed_lag:
         return f"数据期次不满足测试新鲜度策略（{metric.frequency}频指标允许滞后{allowed_lag}天）"
     if obs.unit != metric.unit:

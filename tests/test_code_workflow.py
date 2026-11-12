@@ -48,7 +48,8 @@ def test_large_seed_is_idempotent_precise_and_separate_from_default_source(large
 
 def test_large_seed_cli_requires_an_explicit_non_default_database():
     root = Path(__file__).resolve().parents[1]
-    for arguments in ([], ["--database", str(root / "data/risk-demo.db")]):
+    for arguments in ([], ["--database", str(root / "data/risk-demo.db")],
+                      ["--database", str(root / "data/risk-testdata.db")]):
         result = subprocess.run([sys.executable, "-X", "utf8", str(root / "scripts/seed_large_demo.py"), *arguments],
                                 capture_output=True, text=True, encoding="utf-8")
         assert result.returncode == 2

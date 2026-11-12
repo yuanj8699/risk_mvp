@@ -2,7 +2,7 @@
 
 当前前端是单页风险分析工作台：左侧选择历史任务，底部输入分析要求，主区切换结果和轨迹。保留规则监测与自主代码分析两种方式，在同一页完成证据核对和草稿生成。独立的机构、规则、数据管理页面，以及模拟审批发送入口已移除；数据选择和文件导入在当前页展开。后端业务规则、权限和历史数据保持原有契约。
 
-**这是本地测试工程。机构和数值均为合成数据。默认使用确定性模型响应替身；数据查询、Parquet导出及代码执行走实际组件。代码在Docker容器内运行，容器不能读取应用数据库、密钥或宿主其他目录。真实模型、小Q和真实下发尚未联调。**
+**这是本地测试工程。行社名称和地区归属来自提供的行社表；机构编码、指标数值及排名均为模拟，不能作为真实风险判断。默认使用确定性模型响应替身；数据查询、Parquet导出及代码执行走实际组件。代码在Docker容器内运行，容器不能读取应用数据库、密钥或宿主其他目录。真实模型、小Q和真实下发尚未联调。**
 
 ## 1. 运行
 
@@ -17,6 +17,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 npm.cmd --prefix agent ci --ignore-scripts
 npm.cmd --prefix agent run build
+.\.venv\Scripts\python.exe scripts/import_named_testdata.py --database data/risk-testdata.db
 .\.venv\Scripts\python.exe run.py
 ```
 
@@ -39,10 +40,11 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 npm --prefix agent ci --ignore-scripts
 npm --prefix agent run build
+.venv/bin/python scripts/import_named_testdata.py --database data/risk-testdata.db
 .venv/bin/python run.py
 ```
 
-默认使用项目 `data/` 目录下的 SQLite 数据库，首次启动自动创建表和合成数据。关闭服务后记录仍会保留。重新启动不会自动清空数据。Windows 启动脚本会检查 Python、Node、FastMCP 与 MCP SDK，并安装缺失的项目依赖。MCP 子进程由 Node 自动启动，使用后端当前的 Python 解释器，无需另外开启服务窗口。
+默认使用 `data/risk-testdata.db`。首次启动前需按上面的命令导入项目旁 `测试数据/` 目录中的数据；数据库已存在时跳过导入，导入脚本不会覆盖已有文件。如果先启动空库，系统会自动写入旧的合成演示数据，不能当作已导入真实名称的测试数据。关闭服务后记录仍会保留，重新启动不会自动清空数据。Windows 启动脚本会检查 Python、Node、FastMCP 与 MCP SDK，并安装缺失的项目依赖。MCP 子进程由 Node 自动启动，使用后端当前的 Python 解释器，无需另外开启服务窗口。
 
 ## 2. 自主代码分析
 

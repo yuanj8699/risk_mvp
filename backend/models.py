@@ -15,7 +15,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DB = ROOT / "data" / "risk-demo.db"
+DEFAULT_DB = ROOT / "data" / "risk-testdata.db"
 DEFAULT_DB.parent.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = os.getenv("RISK_DATABASE_URL", f"sqlite:///{DEFAULT_DB}")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}, pool_pre_ping=True)

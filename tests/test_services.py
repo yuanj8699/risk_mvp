@@ -54,6 +54,29 @@ def test_current_and_history_respect_actual_periods_and_stable_evidence(store):
     assert daily_history[0]["current_issue"] is not None
 
 
+def test_monthly_observations_use_monthly_freshness_window(store):
+    """月频上月末数据到次月末前仍可用，超过测试宽限期则明确提示。"""
+    m, s = store.models, store.services
+    with store.factory() as db:
+        db.add(m.Indicator(id="monthly_profit", name="净利润", unit="元", frequency="月", description="月度指标"))
+        for key, as_of in [("month_29", date(2026, 9, 29)),
+                           ("month_45", date(2026, 10, 15)),
+                           ("month_46", date(2026, 10, 16))]:
+            snap = m.Snapshot(id=key, name=key, source="synthetic", data_date=as_of, status="ready")
+            db.add(snap)
+            db.flush()
+            db.add(m.Observation(snapshot_id=key, org_id="LS082", indicator_id="monthly_profit",
+                                 data_date=date(2026, 8, 31), value=Decimal("10"), unit="元", quality_status="valid"))
+        db.commit()
+        contexts = {key: s.freeze_context(db, key, db.get(m.Snapshot, key), "测试", [], ["LS082"])
+                    for key in ("month_29", "month_45", "month_46")}
+    rows = {key: s.query_metrics(context, ["monthly_profit"])["evidence"][0] for key, context in contexts.items()}
+    assert rows["month_29"]["usable"] is True
+    assert rows["month_45"]["usable"] is True
+    assert rows["month_46"]["usable"] is False
+    assert "允许滞后45天" in rows["month_46"]["issue"]
+
+
 def test_frozen_history_ignores_new_imports_and_other_sources(store):
     m, s = store.models, store.services
     before = s.query_metrics(store.context, ["npl_ratio"], history=True)

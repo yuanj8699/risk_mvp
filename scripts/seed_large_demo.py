@@ -105,8 +105,9 @@ def main() -> None:
     parser.add_argument("--database", required=True, type=Path, help="专用合成数据SQLite文件路径")
     args = parser.parse_args()
     target = args.database.expanduser().resolve()
-    if target == (PROJECT_ROOT / "data" / "risk-demo.db").resolve():
-        parser.error("请使用独立数据库文件，不能写入项目默认演示库。")
+    protected = {(PROJECT_ROOT / "data" / name).resolve() for name in ("risk-demo.db", "risk-testdata.db")}
+    if target in protected:
+        parser.error("请使用独立数据库文件，不能写入项目默认库或原演示库。")
     target.parent.mkdir(parents=True, exist_ok=True)
     # 必须在导入models前绑定目标，避免其全局engine连接到默认演示库。
     os.environ["RISK_DATABASE_URL"] = "sqlite:///" + target.as_posix()
