@@ -1,5 +1,6 @@
 import { build } from 'esbuild';
-import { mkdir, copyFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -20,5 +21,12 @@ await build({
     __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false'
   }
 });
-await copyFile(resolve(root, 'index.html'), resolve(root, 'dist/index.html'));
+// 本地服务复用同一个地址，构建后让已有浏览器标签加载本次的脚本和样式。
+let html = await readFile(resolve(root, 'index.html'), 'utf8');
+for (const asset of ['app.js', 'app.css']) {
+  const bytes = await readFile(resolve(root, 'dist', asset));
+  const version = createHash('sha256').update(bytes).digest('hex').slice(0, 12);
+  html = html.replace(`"/${asset}"`, `"/${asset}?v=${version}"`);
+}
+await writeFile(resolve(root, 'dist/index.html'), html);
 console.log('Built offline frontend assets in frontend/dist/');

@@ -29,6 +29,22 @@ const DEMO_MODEL = {
 export function validateRequest(value) {
     if (!isRecord(value))
         return invalidInput("请求须为 JSON 对象");
+    if (value.operation === "follow_up") {
+        const field = (s, max, empty = false) => typeof s === "string" && (empty || Boolean(s.trim())) && [...s].length <= max;
+        if (!field(value.question, 1000) || !isRecord(value.context) ||
+            !field(value.context.topic, 500, true) || !field(value.context.as_of, 64, true) ||
+            !field(value.context.organization, 1024, true))
+            return invalidInput("追问问题或任务范围无效");
+        if (!Array.isArray(value.history) || value.history.length > 6 ||
+            !value.history.every(h => isRecord(h) && field(h.question, 1000) && field(h.answer, 4000))) {
+            return invalidInput("追问历史须为最近六轮以内的问答");
+        }
+        if (!Array.isArray(value.evidence) || value.evidence.length > 1000 ||
+            !value.evidence.every(e => isRecord(e) && field(e.id, 256) && field(e.label, 300) && field(e.text, 3000)) ||
+            new Set(value.evidence.map(e => e.id)).size !== value.evidence.length)
+            return invalidInput("任务证据格式错误或 ID 重复");
+        return value;
+    }
     if (value.operation === "select") {
         if (typeof value.topic !== "string" || value.topic.length > 500) {
             return invalidInput("风险主题须为500字以内文本");
@@ -281,7 +297,7 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
         },
         beforeToolCall: async () => {
             // terminate只影响整轮结束；同轮排队工具仍需在派发前拦住已记录的致命错误。
-            failure ??= scope?.fatal();
+            failure ??= scope?.fatal?.();
             if (failure)
                 return { block: true, reason: failure.message, terminate: true };
             if (scope?.done?.())
@@ -294,7 +310,7 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
         },
         // 业务参数/引用错误允许模型修正；源服务故障和预算错误才终止整个事件。
         afterToolCall: async () => {
-            failure ??= scope?.fatal();
+            failure ??= scope?.fatal?.();
             return failure ? { terminate: true } : undefined;
         },
         finishTurn: async () => {
@@ -353,7 +369,7 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
             new Promise((_, reject) => {
                 cancel = () => {
                     agent.abort();
-                    scope?.cancel();
+                    scope?.cancel?.();
                     reject(new RiskAgentError("TIMEOUT", "Pi Agent已取消或超过执行时限"));
                 };
                 timer = setTimeout(cancel, Math.max(1, Math.min(cfg.limits.timeoutMs, remainingMs)));
@@ -547,6 +563,10 @@ async function explainCase(item, context, cfg, batchDeadline) {
 export async function runRequest(raw, options = {}) {
     const request = validateRequest(raw);
     const cfg = loadConfig(options);
+    if (request.operation === "follow_up") {
+        const { answerFollowUp } = await import("./follow-up.js");
+        return answerFollowUp(request, cfg);
+    }
     const deadline = Date.now() + (request.operation !== "select" ? request.budget_ms : cfg.limits.batchTimeoutMs);
     if (request.operation === "explore") {
         const { exploreTask } = await import("./code-exploration.js");

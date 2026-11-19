@@ -176,7 +176,7 @@ export default defineComponent({
     const errorText = (value?: TraceError) => value ? [value.code, value.message].filter(Boolean).join(' · ') || '错误详情未记录' : '未记录';
     const retryText = (entry: AgentTrace) => entry.retry_observation === 'not_applicable' ? '不适用（离线演示）' : traceNumber(entry.retry_count);
     const recoveryStatus = (value?: string) => ({ retry_available: '仍可修正后重试', exhausted: '已达到尝试上限', recovered: '恢复成功' }[value ?? ''] ?? '恢复状态未记录');
-    const phaseLabel = (value?: string) => ({ select: '指标选择', explain: '事件分析', explore: '自主分析' }[value ?? ''] ?? value);
+    const phaseLabel = (value?: string) => ({ select: '指标选择', explain: '事件分析', explore: '自主分析', follow_up: '任务追问' }[value ?? ''] ?? value);
     const roundTitle = (group: TraceGroup) => group.request?.entry.request === undefined ? '轮次未记录' : `第 ${group.request.entry.request} 轮`;
     const markerLabel = (row: TraceRow) => `${roundTitle(rowGroups.value.get(row.key)!)}，日志第 ${rowNumbers.value.get(row.key)} 项，${entryTitle(row.entry)}，耗时 ${traceDuration(row.entry.duration_ms)}`;
     const rowSummary = (entry: AgentTrace) => {

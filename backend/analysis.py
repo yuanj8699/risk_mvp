@@ -337,6 +337,24 @@ class PiAnalysisProvider:
             result_diagnostics(analysis)
         return cast(dict[str, CaseAnalysis], analyses)
 
+    def follow_up(self, question: str, history: list[JsonObject], context: JsonObject,
+                  evidence: list[JsonObject]) -> JsonObject:
+        """只给 Pi 当前任务已归档的证据。回复引用从宿主证据重建，再交业务层保存。"""
+        result = self._request({"operation": "follow_up", "question": question, "history": history,
+                                "context": context, "evidence": evidence})
+        diagnostics = result_diagnostics(result)
+        answer, ids = result.get("answer"), result.get("evidence_ids")
+        if not isinstance(answer, str) or not answer.strip() or len(answer) > 4000:
+            raise AnalysisError("Pi 追问未返回有效答复。", diagnostics=diagnostics)
+        by_id = {item["id"]: item for item in evidence}
+        if (not isinstance(ids, list) or len(ids) > 16
+                or any(not isinstance(key, str) or key not in by_id for key in ids)
+                or len(set(ids)) != len(ids)):
+            raise AnalysisError("Pi 答复的证据引用无效。", diagnostics=diagnostics)
+        if not diagnostics or diagnostics.get("runtime", {}).get("mode") not in {"model", "demo"}:
+            raise AnalysisError("Pi 追问缺少运行模式。", diagnostics=diagnostics)
+        return {"answer": answer.strip(), "evidence": [by_id[key] for key in ids], "diagnostics": diagnostics}
+
     def explore(self, context: JsonObject) -> JsonObject:
         """整个任务范围的一次代码探索；只返回摘要、引用与执行产物身份。"""
         try:

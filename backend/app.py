@@ -108,7 +108,9 @@ async def lifespan(app):
 
 app = FastAPI(title="行社风险提示测试版", version="0.1.0", lifespan=lifespan)
 from .code_tasks import router as code_router
+from .conversation import router as conversation_router
 app.include_router(code_router)
+app.include_router(conversation_router)
 
 
 @app.exception_handler(AnalysisError)
@@ -157,6 +159,7 @@ def bootstrap():
         latest = db.scalar(select(AnalysisRun).where(or_(AnalysisRun.selection["kind"].as_string().is_(None), AnalysisRun.selection["kind"].as_string() != "code")).order_by(AnalysisRun.created_at.desc()).limit(1))
         return {
             "meta": {"app_name": "行社风险提示", "version": "0.1.0", "demo": True, "agent_mode": provider.mode,
+                     "agent_model": provider.cache_identity["model"], "agent_provider": provider.cache_identity["provider"],
                      "data_date": max((s.data_date for s in snaps), default=date.today()).isoformat(),
                      "rank_note": "默认排名≥72；82家全部参评且无并列时为第72—82名，共11家；并列不截断。"},
             "summary": {"region_count": sum(o.level == 2 for o in orgs), "org_count": sum(o.level == 3 for o in orgs),

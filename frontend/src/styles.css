@@ -1874,6 +1874,45 @@ input.history-search {
   line-height: 1.8;
   overflow-wrap: anywhere;
 }
+.conversation-turn {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+.assistant-byline {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.assistant-byline span, .followup-scope {
+  color: var(--muted);
+  font-size: 12px;
+}
+.answer-text, .conversation-turn .task-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.answer-text { max-width: 75ch; }
+.answer-sources {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+}
+.answer-sources li {
+  margin-bottom: 12px;
+  overflow-wrap: anywhere;
+}
+.answer-sources code {
+  color: var(--muted);
+  font-size: 12px;
+}
+.conversation-error {
+  max-width: 960px;
+  margin: 6px auto 0;
+  color: var(--error);
+  overflow-wrap: anywhere;
+}
 @media(max-width:760px) {
   .workspace-header .history-toggle {
     display: inline-flex;

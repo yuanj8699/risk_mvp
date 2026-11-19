@@ -189,6 +189,20 @@ class RiskCase(Base):
     analysis: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class AgentTurn(Base):
+    """已完成的追问；空范围表示整次运行，其余为该运行的风险事项 ID。"""
+    __tablename__ = "agent_turns"
+    __table_args__ = (UniqueConstraint("run_id", "scope", "turn_no", name="uq_agent_turn_order"),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("analysis_runs.id"))
+    scope: Mapped[str] = mapped_column(String(64))
+    turn_no: Mapped[int] = mapped_column(Integer)
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[list] = mapped_column(JSON)
+    diagnostics: Mapped[dict] = mapped_column(JSON)
+
+
 class Letter(Base):
     """函件当前版本；审批同时绑定revision与正文/证据摘要。"""
     __tablename__ = "letters"

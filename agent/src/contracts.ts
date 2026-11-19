@@ -77,7 +77,17 @@ export type ExploreResult = (ExplorationSubmission | ZeroCandidates) & {
   runtime: RuntimeInfo;
 };
 
-export type RiskAgentRequest = SelectRequest | ExplainBatchRequest | ExploreRequest;
+/** 追问所用的证据及最近对话均由 Python 按选中任务和机构加载。 */
+export type FollowUpEvidence = { id: string; label: string; text: string };
+export type FollowUpRequest = {
+  operation: "follow_up";
+  question: string;
+  context: { topic: string; as_of: string; organization: string };
+  history: { question: string; answer: string }[];
+  evidence: FollowUpEvidence[];
+};
+export type FollowUpResult = { answer: string; evidence_ids: string[]; trace: AgentTrace[]; runtime: RuntimeInfo };
+export type RiskAgentRequest = SelectRequest | ExplainBatchRequest | ExploreRequest | FollowUpRequest;
 
 /** 建议须引用本事件证据；引用有效不代表原因已经查实。 */
 export type Proposal = { text: string; evidence_ids: string[] };
@@ -88,7 +98,7 @@ export type AgentTrace = {
   id?: string;
   parent_id?: string;
   case_key?: string;
-  phase?: "select" | "explain" | "explore";
+  phase?: "select" | "explain" | "explore" | "follow_up";
   started_at?: string;
   event: "request" | "tool";
   transport?: "mcp" | "local";
@@ -156,7 +166,7 @@ export type CaseAnalysis = ResultMetadata & {
 };
 
 export type ExplainBatchResult = { analyses: Record<string, CaseAnalysis> };
-export type RiskAgentResult = SelectResult | ExplainBatchResult | ExploreResult;
+export type RiskAgentResult = SelectResult | ExplainBatchResult | ExploreResult | FollowUpResult;
 
 /** CLI失败时返回此结构并以退出码1结束，不输出原始模型响应或认证信息。 */
 export type AgentErrorResponse = { error: { code: string; message: string }; diagnostics?: AgentDiagnostics };
