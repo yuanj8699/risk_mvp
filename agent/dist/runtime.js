@@ -252,6 +252,7 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
     const secrets = cfg.apiKey ? [cfg.apiKey] : [];
     let requests = 0, toolCalls = 0;
     let failure;
+    let submissionOnly = false;
     const trace = scope?.trace ?? [];
     let modelResultBytes = 0;
     const stream = cfg.stream ?? scope?.demoStream ?? demoStream("select");
@@ -313,12 +314,28 @@ export async function runAgent(cfg, tools, prompt, output, remainingMs, scope) {
             failure ??= scope?.fatal?.();
             return failure ? { terminate: true } : undefined;
         },
-        finishTurn: async () => {
-            if (failure || scope?.done?.())
+        finishTurn: async (turn) => {
+            if (failure || scope?.done?.() || submissionOnly)
                 return { action: "end" };
+            if (!turn.toolResults.length && turn.message.stopReason === "stop" && output() === undefined && scope?.pendingSubmission?.ready()) {
+                if (requests >= cfg.limits.requests || toolCalls >= cfg.limits.tools) {
+                    failure = new RiskAgentError("BUDGET_EXCEEDED", "Pi Agent缺少结构化提交，剩余预算不足");
+                    return { action: "end" };
+                }
+                submissionOnly = true;
+                return { action: "continue" };
+            }
             if (recoveries.size && output() === undefined)
                 return { action: "continue" };
             return undefined;
+        },
+        // 只给一次补交机会；Pi 同步更新本轮可见及可执行的工具，无需再次调用隔离环境。
+        prepareNextTurnWithContext: ({ context }) => {
+            const submission = scope?.pendingSubmission;
+            if (!submissionOnly || !submission)
+                return;
+            return { context: { ...context, tools: [submission.tool] },
+                messages: [{ role: "user", content: submission.reminder, timestamp: Date.now() }] };
         },
     });
     agent.subscribe(event => {

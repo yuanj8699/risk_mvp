@@ -260,13 +260,15 @@ export function errorStream(model: Model<Api>, error: string): AssistantMessageE
 export async function runAgent<T>(
   cfg: Config, tools: AgentTool[], prompt: string,
   output: () => T | undefined, remainingMs: number,
-  scope?: { requestContext: () => Record<string, unknown>; fatal?: () => RiskAgentError | undefined; cancel?: () => void; demoStream: StreamFn; systemPrompt?: string; maxTokens?: number; trace?: AgentTrace[]; nestedCalls?: () => number; hostCalls?: () => number; done?: () => boolean; phase?: AgentTrace["phase"]; caseKey?: string },
+  scope?: { requestContext: () => Record<string, unknown>; fatal?: () => RiskAgentError | undefined; cancel?: () => void; demoStream: StreamFn; systemPrompt?: string; maxTokens?: number; trace?: AgentTrace[]; nestedCalls?: () => number; hostCalls?: () => number; done?: () => boolean; phase?: AgentTrace["phase"]; caseKey?: string;
+    pendingSubmission?: { ready: () => boolean; tool: AgentTool; reminder: string } },
 ): Promise<AgentRun<T>> {
   const runStarted = performance.now();
   const phase = scope?.phase ?? "select";
   const secrets = cfg.apiKey ? [cfg.apiKey] : [];
   let requests = 0, toolCalls = 0;
   let failure: RiskAgentError | undefined;
+  let submissionOnly = false;
   const trace: AgentTrace[] = scope?.trace ?? [];
   let modelResultBytes = 0;
   const stream = cfg.stream ?? scope?.demoStream ?? demoStream("select");
@@ -324,10 +326,25 @@ export async function runAgent<T>(
       failure ??= scope?.fatal?.();
       return failure ? { terminate: true } : undefined;
     },
-    finishTurn: async () => {
-      if (failure || scope?.done?.()) return { action: "end" };
+    finishTurn: async turn => {
+      if (failure || scope?.done?.() || submissionOnly) return { action: "end" };
+      if (!turn.toolResults.length && turn.message.stopReason === "stop" && output() === undefined && scope?.pendingSubmission?.ready()) {
+        if (requests >= cfg.limits.requests || toolCalls >= cfg.limits.tools) {
+          failure = new RiskAgentError("BUDGET_EXCEEDED", "Pi Agent缺少结构化提交，剩余预算不足");
+          return { action: "end" };
+        }
+        submissionOnly = true;
+        return { action: "continue" };
+      }
       if (recoveries.size && output() === undefined) return { action: "continue" };
       return undefined;
+    },
+    // 只给一次补交机会；Pi 同步更新本轮可见及可执行的工具，无需再次调用隔离环境。
+    prepareNextTurnWithContext: ({ context }) => {
+      const submission = scope?.pendingSubmission;
+      if (!submissionOnly || !submission) return;
+      return { context: { ...context, tools: [submission.tool] },
+        messages: [{ role: "user", content: submission.reminder, timestamp: Date.now() }] };
     },
   });
   agent.subscribe(event => {
