@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from test_api_workflow import api, good
+from test_api_workflow import good
 
 
 @pytest.fixture(scope="module")

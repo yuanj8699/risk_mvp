@@ -11,11 +11,11 @@ from .query_budget import business_operation
 @contextmanager
 def read_operation_scope(context, operation, *, cancelled=None):
     """调用边界持有票据；MCP可在参数校验前准入，内部读取复用同一份额度。"""
-    # 原规则监测没有代码执行能力；本次共享额度约束自主分析任务的两条取数路径。
+    # 撰函与代码分析均对模型开放主动取数；沿用同一任务预算与并发票据。
     with services.read_session() as db:
         run = db.get(AnalysisRun, context["run_id"])
-        is_code = run is not None and run.selection.get("kind") == "code"
-    if not is_code:
+        budgeted = run is not None and run.selection.get("kind") in {"code", "risk_scan"}
+    if not budgeted:
         yield
         return
     with business_operation(context["run_id"], operation, cancelled=cancelled) as ticket:

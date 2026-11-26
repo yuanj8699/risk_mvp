@@ -3,9 +3,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 export const BUSINESS_TOOLS = ["search_indicators", "query_metrics", "check_risks", "get_letter_template"];
+export const LETTER_TOOLS = ["check_risk_rules", "fetch_org_metrics", "run_verified_operator"];
 export const EXPLORATION_TOOLS = ["search_indicators", "check_risks", "get_letter_template", "write_task_file", "read_task_file", "list_task_files", "execute_python"];
 export const PLAN_HOST_TOOL = "register_query_plan";
-export const MCP_TOOL_NAMES = [...new Set([...BUSINESS_TOOLS, ...EXPLORATION_TOOLS, PLAN_HOST_TOOL])];
+export const MCP_TOOL_NAMES = [...new Set([...BUSINESS_TOOLS, ...EXPLORATION_TOOLS, ...LETTER_TOOLS, PLAN_HOST_TOOL])];
 export class BusinessToolError extends Error {
     code;
     recoverable;
@@ -103,7 +104,8 @@ export class BusinessMcpClient {
             if (!data || typeof data !== "object" || Array.isArray(data))
                 throw new BusinessToolError("SOURCE_ERROR", "MCP业务结果格式错误");
             const body = data;
-            if (result.isError || body.error) {
+            // 核验层的 blocked 是完整业务结果；其中的口径错误及建议须原样交给模型。
+            if (result.isError || (body.error && !(name === "run_verified_operator" && body.status === "blocked"))) {
                 const failure = body.error;
                 const code = failure?.code ?? "SOURCE_ERROR";
                 const recoverable = ["INVALID_ARGUMENT", "UNKNOWN_INDICATOR", "SCOPE_VIOLATION", "VALIDATION_ERROR",

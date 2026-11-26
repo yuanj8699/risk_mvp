@@ -22,7 +22,8 @@ from .query_budget import BudgetError
 
 mcp = FastMCP("risk-business", mask_error_details=True, strict_input_validation=True)
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
-READ_OPERATIONS = {"search_indicators", "query_metrics", "check_risks", "get_letter_template"}
+READ_OPERATIONS = {"search_indicators", "query_metrics", "check_risks", "get_letter_template",
+                   "fetch_org_metrics", "check_risk_rules", "run_verified_operator"}
 _request_cancelled: ContextVar[threading.Event | None] = ContextVar("mcp_read_cancelled", default=None)
 
 
@@ -111,6 +112,51 @@ async def check_risks() -> dict:
 async def get_letter_template(version: str = "test-v1") -> dict:
     """读取指定版本函件模板与填充字段，不生成、审核或发送函件。"""
     return await _call("get_letter_template", lambda _: services.get_letter_template(version))
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def fetch_org_metrics(dimension_id: str | None = None, indicator_ids: list[str] | None = None,
+                            keyword: str | None = None, include_history: bool = False) -> dict:
+    """读取绑定行社在本次扫描中的有效实测指标、释义、排名与证据，可按需取历史。"""
+    from .risk_letter import fetch_org_metrics_for_case
+
+    def fetch(context):
+        with services.letter_case_session(context) as (_, _, case):
+            return fetch_org_metrics_for_case(case, dimension_id, indicator_ids, keyword, include_history)
+    return await _call("fetch_org_metrics", fetch)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def check_risk_rules() -> dict:
+    """读取绑定行社命中的监管底线、归档风险信号与防误报提示。"""
+    from .risk_letter import evaluate_letter_rules
+
+    def check(context):
+        with services.letter_case_session(context) as (_, _, case):
+            return evaluate_letter_rules(case)
+    return await _call("check_risk_rules", check)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def run_verified_operator(operator: str, params: dict, focus_current_org: bool = True) -> dict:
+    """对冻结的全体可见行社做核验，默认显示汇总和本行社明细。不要传 org_ids。
+
+    consecutive_trend 传 indicator_id、n_periods 和 direction（up/down）。
+    benchmark_deviation 传 indicator_id，baseline 默认 auto，可选 median。
+    bucket_distribution 传 indicator_id、升序切分点 bins；concentration_cr 传金额 indicator_id 和 top_n。
+    incremental_contribution 传增量 indicator_id 或 base_indicator_id、from_date、to_date。
+    metric_divergence 传 indicator_a、indicator_b 和 rule_type；threshold_combo 加 a_op/a_value/b_op/b_value，
+    quantile_opposite 加 a_side/b_side（top/bottom）和 a_pct/b_pct，spread 加 spread_op/spread_value。
+    stress_test 情景测算不生成实测：formula_id=npl_shock_provision_coverage 传 npl_balance_indicator_id、
+    provision_coverage_indicator_id、shock_type（pct/amount）、shock_value；rate_shock_bond_loss 传
+    bond_balance_indicator_id、duration_indicator_id、shift_bp。请先检查 status、coverage 和 assumptions。
+    """
+    from .risk_scans import run_letter_verified_operator
+
+    def verify(context):
+        with services.letter_case_session(context) as (db, run, case):
+            return run_letter_verified_operator(db, run, case, operator, params, focus_current_org)
+    return await _call("run_verified_operator", verify)
 
 
 def _code_call(action):

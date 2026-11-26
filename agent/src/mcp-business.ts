@@ -7,9 +7,10 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import type { TaskContext } from "./contracts.js";
 
 export const BUSINESS_TOOLS = ["search_indicators", "query_metrics", "check_risks", "get_letter_template"] as const;
+export const LETTER_TOOLS = ["check_risk_rules", "fetch_org_metrics", "run_verified_operator"] as const;
 export const EXPLORATION_TOOLS = ["search_indicators", "check_risks", "get_letter_template", "write_task_file", "read_task_file", "list_task_files", "execute_python"] as const;
 export const PLAN_HOST_TOOL = "register_query_plan" as const;
-export const MCP_TOOL_NAMES = [...new Set([...BUSINESS_TOOLS, ...EXPLORATION_TOOLS, PLAN_HOST_TOOL])];
+export const MCP_TOOL_NAMES = [...new Set([...BUSINESS_TOOLS, ...EXPLORATION_TOOLS, ...LETTER_TOOLS, PLAN_HOST_TOOL])];
 export type BusinessToolName = typeof MCP_TOOL_NAMES[number];
 
 export class BusinessToolError extends Error {
@@ -23,7 +24,7 @@ export class BusinessMcpClient {
   private closing?: Promise<void>;
   private definitions: Tool[] = [];
 
-  constructor(env: NodeJS.ProcessEnv, context: TaskContext, orgId: string | undefined, private readonly deadline: number,
+  constructor(env: NodeJS.ProcessEnv, context: Pick<TaskContext, 'run_id'>, orgId: string | undefined, private readonly deadline: number,
     private readonly allowedTools: readonly BusinessToolName[] = BUSINESS_TOOLS) {
     if (!env.RISK_PYTHON_EXECUTABLE || !env.RISK_PROJECT_ROOT) {
       throw new BusinessToolError("CONFIG_ERROR", "MCP需要RISK_PYTHON_EXECUTABLE和RISK_PROJECT_ROOT");
@@ -99,7 +100,8 @@ export class BusinessMcpClient {
       }
       if (!data || typeof data !== "object" || Array.isArray(data)) throw new BusinessToolError("SOURCE_ERROR", "MCP业务结果格式错误");
       const body = data as Record<string, unknown>;
-      if (result.isError || body.error) {
+      // 核验层的 blocked 是完整业务结果；其中的口径错误及建议须原样交给模型。
+      if (result.isError || (body.error && !(name === "run_verified_operator" && body.status === "blocked"))) {
         const failure = body.error as { code?: string; message?: string } | undefined;
         const code = failure?.code ?? "SOURCE_ERROR";
         const recoverable = ["INVALID_ARGUMENT", "UNKNOWN_INDICATOR", "SCOPE_VIOLATION", "VALIDATION_ERROR",

@@ -2,6 +2,7 @@
 __pycache__/
 .pytest_cache/
 *.pyc
+*.log
 *.db
 *.db-shm
 *.db-wal
@@ -10,3 +11,9 @@ frontend/node_modules/
 agent/node_modules/
 .env
 .openai/
+sandbox/pytest-*/
+sandbox/budget-verify-*/
+sandbox/risk-agent-tests-*/
+sandbox/risk-report-ui-*/
+sandbox/uv-*/
+

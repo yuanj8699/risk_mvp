@@ -152,3 +152,22 @@ test("CLI emits one JSON value and a nonzero exit on invalid input", () => {
   assert.equal(invalid.status, 1);
   assert.equal(JSON.parse(invalid.stdout).error.code, "INVALID_INPUT");
 });
+
+test("选择指标采用单次及批次默认预算，支持独立环境覆盖", async t => {
+  const nativeTimer = globalThis.setTimeout;
+  const delays = [];
+  t.mock.method(globalThis, "setTimeout", (fn, delay, ...args) => {
+    delays.push(delay);
+    return nativeTimer(fn, delay, ...args);
+  });
+  for (const [env, expected] of [
+    [{}, 90000],
+    [{ RISK_PI_TIMEOUT_MS: "500000" }, 360000],
+    [{ RISK_PI_TIMEOUT_MS: "10000" }, 10000],
+    [{ RISK_PI_BATCH_TIMEOUT_MS: "15000" }, 15000],
+  ]) {
+    delays.length = 0;
+    await runRequest(selection, { env });
+    assert.ok(delays.some(delay => delay === expected), JSON.stringify(delays));
+  }
+});

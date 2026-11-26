@@ -15,6 +15,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -25,9 +26,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .analysis import AnalysisError, provider
+from .data_fetcher import data_fetcher_name
+from .docx_export import MIME_TYPE as DOCX_MEDIA_TYPE, build_risk_report_docx
+from .smartq_followup import is_smartq_followup_available
 from .models import (ROOT, Base, engine, SessionLocal, Organization, Indicator, Snapshot, Observation,
                      Rule, AnalysisRun, RiskCase, Letter, LetterHistory, AuditLog, uid, now)
 from .seed import seed_database
+from .run_cleanup import delete_analysis_run
 from .services import (
     number, display, observation_issue, evaluate, evidence_record,
     search_indicators, query_metrics, check_risks, get_letter_template,
@@ -99,18 +104,25 @@ def audit(db: Session, action: str, key: str, details: dict | None = None) -> No
 async def lifespan(app):
     """首次启动创建测试结构和样例；已有业务数据不会被种子覆盖。"""
     Base.metadata.create_all(engine)
-    with SessionLocal() as db:
-        seed_database(db)
+    if data_fetcher_name() == "local":
+        with SessionLocal() as db:
+            seed_database(db)
     from .query_budget import reclaim_dead_owners
     reclaim_dead_owners()
-    yield
+    try:
+        yield
+    finally:
+        from .risk_scans import shutdown_auto_reports
+        shutdown_auto_reports()
 
 
 app = FastAPI(title="行社风险提示测试版", version="0.1.0", lifespan=lifespan)
 from .code_tasks import router as code_router
 from .conversation import router as conversation_router
+from .risk_scans import router as risk_scan_router
 app.include_router(code_router)
 app.include_router(conversation_router)
+app.include_router(risk_scan_router)
 
 
 @app.exception_handler(AnalysisError)
@@ -127,6 +139,12 @@ class RunPayload(Payload):
     risk_topic: str = Field(default="", max_length=500)
     org_scope: list[str] | None = None
     retry: bool = False
+
+
+class VerificationPayload(Payload):
+    operator: str
+    params: dict
+    indicator_ids: list[str] | None = Field(default=None, max_length=1000)
 
 
 class RulePayload(Payload):
@@ -156,9 +174,12 @@ def bootstrap():
         indicators = db.scalars(select(Indicator).order_by(Indicator.id)).all()
         rules = db.scalars(select(Rule).order_by(Rule.id)).all()
         snaps = db.scalars(select(Snapshot).order_by(Snapshot.created_at.desc(), Snapshot.data_date.desc())).all()
-        latest = db.scalar(select(AnalysisRun).where(or_(AnalysisRun.selection["kind"].as_string().is_(None), AnalysisRun.selection["kind"].as_string() != "code")).order_by(AnalysisRun.created_at.desc()).limit(1))
+        from .risk_scans import scan_dimensions
+        latest = db.scalar(select(AnalysisRun).where(or_(AnalysisRun.selection["kind"].as_string().is_(None), AnalysisRun.selection["kind"].as_string().not_in(["code", "risk_scan"]))).order_by(AnalysisRun.created_at.desc()).limit(1))
         return {
-            "meta": {"app_name": "行社风险提示", "version": "0.1.0", "demo": True, "agent_mode": provider.mode,
+            "meta": {"app_name": "行社风险提示", "version": "0.1.0", "demo": data_fetcher_name() == "local",
+                     "smartq_followup_available": is_smartq_followup_available(),
+                     "data_fetcher": data_fetcher_name(), "agent_mode": provider.mode,
                      "agent_model": provider.cache_identity["model"], "agent_provider": provider.cache_identity["provider"],
                      "data_date": max((s.data_date for s in snaps), default=date.today()).isoformat(),
                      "rank_note": "默认排名≥72；82家全部参评且无并列时为第72—82名，共11家；并列不截断。"},
@@ -168,6 +189,7 @@ def bootstrap():
                         "letter_count": db.scalar(select(func.count()).select_from(Letter)) or 0},
             "organizations": [org_dict(o) for o in orgs], "indicators": [metric_dict(i) for i in indicators],
             "rules": [rule_dict(r) for r in rules], "snapshots": [snapshot_dict(s) for s in snaps],
+            "risk_dimensions": scan_dimensions({i.id for i in indicators}),
             "latest_run": run_dict(latest) if latest else None,
         }
 
@@ -192,6 +214,37 @@ def task_metrics(run_id: str, indicator_ids: str, org_id: str | None = None,
                              org_ids=[org_id] if org_id else None,
                              history=history, limit=limit, offset=offset)
     except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/runs/{run_id}/verify")
+def verify_run(run_id: str, data: VerificationPayload):
+    """只读复核任务冻结的观测；不会因系统切换取数器而改查实时数据。"""
+    from .data_fetcher import LocalSnapshotFetcher
+    from .risk_knowledge import INDICATORS
+    from .services import ServiceError
+    from .verification_layer import run_verified_operator
+
+    try:
+        context = load_task_context(run_id)
+        if context["source"] == "quickbi":
+            raise HTTPException(409, "该 QuickBI 任务未留存可完整重放的原子快照，无法按冻结口径核验")
+        # 显式清单限定本次取数。默认从算子参数推导依赖，并为率类全辖对标取分子分母。
+        requested = set(data.indicator_ids or [])
+        if data.indicator_ids is None:
+            for field in ("indicator_id", "base_indicator_id", "indicator_a", "indicator_b",
+                          "npl_balance_indicator_id", "provision_coverage_indicator_id",
+                          "provision_balance_indicator_id", "bond_balance_indicator_id", "duration_indicator_id"):
+                value = data.params.get(field)
+                if isinstance(value, str):
+                    requested.add(value)
+            if data.operator == "benchmark_deviation" and data.params.get("baseline", "auto") in ("auto", "province_weighted"):
+                metric = data.params.get("indicator_id")
+                definition = INDICATORS.get(metric, {}) if isinstance(metric, str) else {}
+                requested.update(definition[key] for key in ("numerator_id", "denominator_id") if definition.get(key))
+        fetched = LocalSnapshotFetcher().fetch_scoped(context, requested)
+        return run_verified_operator(fetched, INDICATORS, data.operator, data.params)
+    except ServiceError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
@@ -346,13 +399,25 @@ def create_run(data: RunPayload):
 @app.get("/api/runs")
 def list_runs():
     with SessionLocal() as db:
-        return [run_dict(r) for r in db.scalars(select(AnalysisRun).where(or_(AnalysisRun.selection["kind"].as_string().is_(None), AnalysisRun.selection["kind"].as_string() != "code")).order_by(AnalysisRun.created_at.desc()))]
+        return [run_dict(r) for r in db.scalars(select(AnalysisRun).where(or_(AnalysisRun.selection["kind"].as_string().is_(None), AnalysisRun.selection["kind"].as_string().not_in(["code", "risk_scan"]))).order_by(AnalysisRun.created_at.desc()))]
 
 
 @app.get("/api/runs/{run_id}/checks")
 def get_checks(run_id: str):
     with SessionLocal() as db:
         return get_or_404(db, AnalysisRun, run_id).checks
+
+
+@app.delete("/api/runs/{run_id}")
+def delete_run(run_id: str):
+    with SessionLocal.begin() as db:
+        return delete_analysis_run(db, run_id)
+
+
+@app.delete("/api/code-runs/{run_id}")
+def delete_code_run(run_id: str):
+    with SessionLocal.begin() as db:
+        return delete_analysis_run(db, run_id, expected_kind="code")
 
 
 @app.get("/api/cases")
@@ -369,7 +434,12 @@ def get_case(case_id: str):
     with SessionLocal() as db:
         case = get_or_404(db, RiskCase, case_id)
         letter = db.scalar(select(Letter).where(Letter.case_id == case_id))
-        return {**case_dict(case), "evidence": case.evidence, "analysis": case.analysis, "letter": letter_dict(letter) if letter else None}
+        detail = {**case_dict(case), "evidence": case.evidence, "analysis": case.analysis, "letter": letter_dict(letter) if letter else None}
+        if {"issues", "signals"}.intersection(case.analysis or {}):
+            from .risk_letter import evaluate_letter_rules
+            rules = evaluate_letter_rules(case)
+            detail["letter_eligible"] = bool(rules["mandatory_p0_clues"] or rules["scan_signals"])
+        return detail
 
 
 def render_letter(case: RiskCase) -> str:
@@ -396,6 +466,10 @@ def draft_letter(case_id: str):
     """每个事项只建立一份函件；重复请求返回已有草稿。"""
     with SessionLocal() as db:
         case = get_or_404(db, RiskCase, case_id)
+        run = get_or_404(db, AnalysisRun, case.run_id)
+        if run.selection.get("kind") == "risk_scan":
+            from .risk_scans import draft_scan
+            return draft_scan(run.id, case.org_id)
         existing = db.scalar(select(Letter).where(Letter.case_id == case_id))
         if existing:
             return letter_dict(existing)
@@ -507,6 +581,20 @@ def download_letter(letter_id: str):
         letter = get_or_404(db, Letter, letter_id)
         return Response(letter.content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="risk-letter-{letter.id}-v{letter.revision}.txt"'})
+
+
+@app.get("/api/letters/{letter_id}/download.docx", response_class=Response, responses={
+    200: {"content": {DOCX_MEDIA_TYPE: {"schema": {"type": "string", "format": "binary"}}}},
+})
+def download_letter_docx(letter_id: str):
+    """从当前修订导出 Word，文件名使用事项留存的行社名称。"""
+    with SessionLocal() as db:
+        letter = get_or_404(db, Letter, letter_id)
+        org_name = get_or_404(db, RiskCase, letter.case_id).org_name
+        content = letter.content
+        filename = quote(f"{org_name}风险报告-v{letter.revision}.docx", safe="")
+    return Response(build_risk_report_docx(content, org_name=org_name), media_type=DOCX_MEDIA_TYPE,
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"})
 
 
 IMPORT_COLUMNS = ["org_code", "indicator_id", "data_date", "value", "unit", "rank", "population", "rank_scope", "value_encoding"]

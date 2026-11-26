@@ -1,289 +1,231 @@
-# 行社风险提示智能体 · 本地测试版 v0.1
+# 行社风险提示智能体（Risk Agent Workbench）v1.0.0
 
-在单页工作台中选择数据快照和行社，向 Pi 发起规则监测或自主分析。完成后可就结果连续追问，打开每条答复引用的证据，查看工具轨迹或生成草稿。左侧历史可以重新打开已保存的任务和对话。
+面向省级农商行 / 省联社非现场风险监测场景的单页智能分析工作台，完整打通 **「全辖 82 家行社扫描 → 口径校验与确定性核验算子 → 重点行社后台自动生成正式风险报告 → 在线修订定稿与 Word 导出 → 全程执行轨迹溯源与证据追问」** 业务闭环。
 
-**这是本地测试工程。行社名称和地区归属来自提供的行社表；机构编码、指标数值及排名均为模拟，不能作为真实风险判断。默认使用确定性模型响应替身；数据查询、Parquet导出及代码执行走实际组件。代码在Docker容器内运行，容器不能读取应用数据库、密钥或宿主其他目录。规则监测、归档追问及 Docker 自主计算已使用 OpenAI 模型在测试数据上联调。**
+> **数据与运行边界声明**
+> - 外网默认运行 `RISK_DATA_FETCHER=local`，使用本地 SQLite 快照与合成测试数据，不连接内网生产库；内网部署切换环境变量即可对接 QuickBI 合规票据免登与 OLAP 取数接口。
+> - 默认模型模式为 `RISK_PI_MODE=demo`（零密钥离线演示，数据查询与规则校验仍走真实数据库）；启用 `RISK_PI_MODE=model`（如 DeepSeek / OpenAI）时需通过环境变量或本地 `.env` 提供密钥，严禁将真实密钥或生产数据写入代码仓库。
 
-## 1. 运行
+---
 
-需要 Python 3.11 或更高版本、Node.js 22.19 或更高版本；自主代码分析还需要已启动的Docker Linux容器引擎。首次安装需要访问 Python 包源和 npm。前端页面及 Agent 的 JavaScript 已编译保留；日常运行不需要启动前端开发服务，但需要 Node.js 执行 Pi Agent。
+## 核心特性（v1.0.0）
 
-### Windows
+### 1. 全辖多维风险扫描与多批并发归并
+- 覆盖 **82 家三级行社**（11 个地区），内置信用风险防控、风险抵补与资本管理、资金业务管控等多维度指标知识库与参考筛查规则。
+- 扫描结果按批并发（默认 5 家/批、6 批并发）交给 **Pi Agent** 归并风险事项，要求所有定性归纳严格绑定同机构有效 `evidence_id`，杜绝跨行社串数与编造指标。
+- 支持 **DeepSeek（含思考链 `reasoning_content` 透出）**、OpenAI 等真实大模型，以及确定性离线 `demo` 模式。
 
-解压后双击 `start_windows.bat`，或在 PowerShell 中执行：
+### 2. 两层确定性核验算子 + 只读 MCP 业务总线
+- **只读 MCP 服务**（`backend/mcp_server.py`）：按任务与行社隔离上下文，向 Agent 暴露 `fetch_org_metrics`、`check_risk_rules`、`run_verified_operator` 等只读取证工具，模型无法篡改原始观测或审批状态。
+- **确定性核验层**（`backend/verification_primitives.py` + `backend/verification_layer.py`）：
+  - 全程采用 Python `Decimal` 高精度计算，坚持「缺数不补零、不跳期拼接、率类拒绝打总、实测与推演严格隔离」；
+  - 内置 7 大标准分析算子：`consecutive_trend`（连续趋势）、`benchmark_deviation`（基准偏离）、`metric_divergence`（指标背离）、`concentration_cr`（集中度 CR）、`incremental_contribution`（增量贡献）、`bucket_distribution`（分档分布）、`stress_test`（压力测算，强制标记 `simulated`）。
+
+### 3. 正式「风险报告」自动生成、精修定稿与 Word 导出
+- **扫描后自动出报告**：全辖扫描完成后立即返回总览，并在后台并发池自动为重点高风险行社（默认优先 `≥3 项 P0 监管底线`，单批上限 `8` 家）撰写正式风险报告；总览页每 4 秒静默更新进度并支持失败重试，其余行社可按需手动生成。
+- **严口径公文撰写与复核**：
+  - 声明式监管底线（`letter_regulatory_floors`）与审慎表述护栏（`letter_caution_guards`）驱动；
+  - 强制 **Read-Before-Cite（先查后引）**、**P0 底线零遗漏**、无内部代码/脏文案拦截；
+  - **底层全精度 + 对外两位小数**：数据库与核验算子保留全精度，正式风险报告统一按财务四舍五入（`ROUND_HALF_UP`）保留 2 位小数（极小非零百分点变动保留 4 位防归零）。
+- **在线修订、审核定稿与零依赖 Word 导出**：
+  - 支持「编辑修订 → 保存新版本」（带乐观锁版本冲突保护）与「审核定稿」（定稿后锁定防覆盖）；
+  - 内置纯 Python 标准库公文生成器（`backend/docx_export.py`，零第三方依赖），一键导出符合银行公文版式（A4 页边距、小标宋标题、仿宋正文、带表头与数值右对齐的附表）的 `.docx` 文件，同时保留 Markdown 导出。
+
+### 4. 可视化执行轨迹（Trace）与历史任务管理
+- **三轨交互式时间轴**：按输入 / 模型 / 工具三轨展示执行过程，支持按时长、轮次、调用顺序切换；**默认自动折叠超过 15 秒的空闲间隙**并支持一键切换真实跨度。
+- **可审计的模型诊断**：完整留存模型公开思考链、工具参数与耗时、token 用量、证据 ID 与 3 次有界纠错记录，所有凭据与超长正文均做脱敏与截断标注。
+- **历史列表治理**：侧边栏展示时间、模型/模式标签与报告数/进度，支持单条安全删除（事务加锁拦截运行中或含已定稿/已下发报告的任务）与「一键清理失败任务」。
+
+### 5. 多轮证据追问、小 Q 补查与自主代码分析
+- **多轮证据追问**：支持切换「当前行社 / 全辖范围」连续追问，回答强制引用任务归档证据 ID 并支持定位对应轮次轨迹。
+- **小 Q 实时补查**：支持对归档外指标自动改写规范问句并调用小 Q 流式接口补查（主口径仍以 QuickBI 源表为准）。
+- **Docker 隔离自主代码分析**：支持在无网络、限资源 Docker 容器内运行 Python 脚本分析 Parquet 导出数据，并由宿主核验清单与原始证据哈希；另内置可选 QuickJS `risk_js` Code Mode 实验入口（默认关闭）。
+
+### 6. 双轨数据接入（外网开发 + 内网 QuickBI 就绪）
+- **外网开发模式（`local`）**：默认读取 `data/risk-testdata.db`，支持页面上传 CSV/XLSX 快照及 `scripts/import_from_database.py` 只读视图导入。
+- **内网 QuickBI 模式（`quickbi`）**：已按内网协议对齐 **合规票据纯 HTTP 免登身份层**（`IDENTITY_PROVIDER=smartq_ticket`，无浏览器、逐跳严格同源校验、5 分钟缓存、`AUTHX_01002` 自动重出票重试）与 **真实 `olapQueryParam` 表单取数层**（长表/宽表自适应、动态 `fid` 解析、`live_indicators()` 实时指标清单）。详见 [docs/quickbi-integration.md](docs/quickbi-integration.md)。
+
+---
+
+## 系统架构
+
+```text
+┌────────────────────────────────────────────────────────────────────┐
+│  Vue 3 + TypeScript + TDesign 单页工作台 (frontend/src → dist)       │
+│  总览与分析 · 风险报告(编辑/定稿/Word导出) · 执行轨迹(折叠空闲) · 追问 │
+└───────────────────────────────┬────────────────────────────────────┘
+                                │ HTTP / JSON / File Download
+┌───────────────────────────────▼────────────────────────────────────┐
+│  FastAPI 业务宿主 (backend/app.py · risk_scans.py · risk_letter.py) │
+│  ├─ 数据取数层 (data_fetcher.py): LocalSnapshot | QuickBiOlapFetcher│
+│  ├─ 确定性核验层 (metric_validator · verification_primitives/layer) │
+│  ├─ 知识与公文层 (risk_knowledge · docx_export · run_cleanup)       │
+│  └─ 持久化归档 (SQLAlchemy · SQLite WAL / PostgreSQL)               │
+└──────────────────┬───────────────────────────────────┬─────────────┘
+                   │ JSON Subprocess                   │ Read-only stdio MCP
+┌──────────────────▼───────────────────────────────────▼─────────────┐
+│  Pi Agent 运行时 (agent/src → dist · @earendil-works/pi-agent-core) │
+│  ├─ risk-synthesis.ts (多批并发归并 + 定性表述护栏)                  │
+│  ├─ risk-letter.ts    (工具取证 + 算子核验 + P0底线复核撰函)         │
+│  ├─ follow-up.ts      (多轮归档证据问答 + 小Q改写补查)               │
+│  └─ code-exploration.ts (Docker 隔离 Python 自主分析)               │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 快速开始
+
+### 环境要求
+- **Python 3.11+**（已在 Python 3.14 `.venv` 全量验证）
+- **Node.js 22.19+**（运行 Pi Agent 与构建前端/Agent）
+- **Docker**（仅使用「自主代码分析」功能时需要；常规全辖风险扫描、报告撰写与追问无需 Docker）
+
+### 1. 安装与启动（Windows PowerShell）
+
+也可直接双击根目录 `start_windows.bat`，或手动执行：
 
 ```powershell
+# 1. 创建并安装 Python 依赖
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# 2. 安装并构建 Pi Agent 与前端（仓库已附带编译产物，二次开发时重新构建）
 npm.cmd --prefix agent ci --ignore-scripts
 npm.cmd --prefix agent run build
+npm.cmd --prefix frontend ci --ignore-scripts
+npm.cmd --prefix frontend run build
+
+# 3. 初始化本地 82 家行社测试快照（仅首次需要，不覆盖已有库）
 .\.venv\Scripts\python.exe scripts/import_named_testdata.py --database data/risk-testdata.db
-.\.venv\Scripts\python.exe run.py
+
+# 4. 启动单页工作台（默认 127.0.0.1:8000，可传 --port 8010）
+.\.venv\Scripts\python.exe run.py --host 127.0.0.1 --port 8000
 ```
 
-浏览器打开 <http://127.0.0.1:8000>。接口文档：<http://127.0.0.1:8000/docs>。
-
-首次使用自主代码分析前，构建固定依赖镜像：
-
-```powershell
-docker build -t risk-python-sandbox:0.1 sandbox
-```
-
-镜像构建需要获取基础镜像和依赖；分析任务运行时没有网络，也不能执行临时 `pip install`。Docker或镜像不可用会明确失败，不改到宿主执行Python。
-
-已验证 OpenAI 模型通过 Pi 编写 Python，在 Docker 中计算单行社两期差额，并提交带原始观测引用的结果。项目镜像也通过了 Parquet 导出及容器隔离检查。
-
-### macOS / Linux
+### 2. 安装与启动（macOS / Linux）
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-npm --prefix agent ci --ignore-scripts
-npm --prefix agent run build
+npm --prefix agent ci --ignore-scripts && npm --prefix agent run build
+npm --prefix frontend ci --ignore-scripts && npm --prefix frontend run build
 .venv/bin/python scripts/import_named_testdata.py --database data/risk-testdata.db
-.venv/bin/python run.py
+.venv/bin/python run.py --host 127.0.0.1 --port 8000
 ```
 
-默认使用 `data/risk-testdata.db`。首次启动前需按上面的命令导入项目旁 `测试数据/` 目录中的数据；数据库已存在时跳过导入，导入脚本不会覆盖已有文件。如果先启动空库，系统会自动写入旧的合成演示数据，不能当作已导入真实名称的测试数据。关闭服务后记录仍会保留，重新启动不会自动清空数据。Windows 启动脚本会检查 Python、Node、FastMCP 与 MCP SDK，并安装缺失的项目依赖。MCP 子进程由 Node 自动启动，使用后端当前的 Python 解释器，无需另外开启服务窗口。
+启动后访问：
+- 工作台首页：<http://127.0.0.1:8000>
+- FastAPI 接口文档：<http://127.0.0.1:8000/docs>
 
-## 2. 自主代码分析
+---
 
-可选的Code Mode实验默认关闭。设置`RISK_CODEMODE=1`后启动服务，Pi可用一个`risk_js`调用组合规则检查和指标目录查询；宿主校验并登记只读计划，Python按计划路径取数。两条路径共用应用库中的任务查询额度。不开启时保留原逐工具模式。
+## 模型与数据源配置
 
-该实验已验证 QuickJS、MCP、计划文件和共享额度。固定模型流减少了模型往返，但增加了本地开销，继续默认关闭。详见[Code Mode实验说明](docs/codemode-poc.md)。
+应用启动时自动读取项目根目录下被 Git 忽略的 `.env` 文件（也可直接通过系统环境变量配置）。
 
-创建任务时固定主题、数据快照、机构范围与历史快照集合。Pi可使用任务文件和隔离执行工具，Python脚本通过 `risk_client.export_metrics()` 请求授权指标数据，返回容器内Parquet路径及清单。完整记录留在文件中；模型读取代码输出和小型摘要，而不逐行接收整份数据。
+### 离线演示模式（默认，无需 API Key）
 
-```powershell
-$body = @{
-    snapshot_id = 'demo-2026-10-28'
-    risk_topic = '比较各行社不良贷款率的跨期变化，并保留原始证据'
-    # 可选 org_scope = @('LS082')；省略时覆盖82家行社。
-} | ConvertTo-Json
-$run = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/code-runs' `
-    -ContentType 'application/json' -Body $body
-Invoke-RestMethod "http://127.0.0.1:8000/api/code-runs/$($run.id)"
-Invoke-RestMethod -Method Post "http://127.0.0.1:8000/api/code-runs/$($run.id)/draft"
+```dotenv
+RISK_DATA_FETCHER=local
+RISK_PI_MODE=demo
 ```
 
-`GET /api/code-runs/{id}` 返回任务状态、`result`、`executions`与`files`。每次执行保留退出码、标准输出、错误输出、导出清单和输出文件hash。最终 `findings` 必须引用本任务实际导出的原始观测ID；宿主核对观测、文件hash及成功执行记录后才标记完成。失败或仍在执行的任务不能生成草稿。自主分析草稿是带证据的分析综述，尚未接入原规则函件的审核与模拟下发状态机。
+### 真实大模型模式（以 DeepSeek 为例）
 
-默认demo会先写入含一个固定列名错误的脚本，真实执行得到 `KeyError` 后修改，再用pandas按行社和实际期次计算变化，输出 `result.json` 与行社汇总CSV。它演示的是“编写—执行—读取错误—修正—核验”链路，不能当成真实模型自主推理效果。
-
-### 查看运行轨迹
-
-选择历史任务后，在主区切换“轨迹”，用范围选择查看指标选择、行社分析或失败诊断；自主分析展示本次任务的完整记录。当前展示任务完成或失败后保存的轨迹。
-
-- 轨迹采用紧凑的分轮日志和请求输入／模型／工具泳道，可切换时长、轮次、调用坐标，搜索工具名、参数、错误或证据 ID。点击泳道会定位并展开对应日志；工具记录保留父子关系、参数预览、耗时、返回体积、失败原因、执行身份及证据引用，可按全部、工具、模型、失败筛选。
-- 模型层 tap 记录每次请求的模型、消息与工具摘要、耗时、公开 `reasoning_content` / thinking、供应商实际提供的 token 用量，以及可观测的 HTTP 请求尝试。不保存认证头、完整请求体或不公开的推理签名；参数与正文经过脱敏和限长，截断有明确提示。
-- 普通参数错误及 Python 非零退出允许同一工具共 3 次尝试（首次加 2 次纠错）。错误反馈给 Pi 后由它修正；写脚本成功不会清除 Python 执行的失败次数。第三次仍失败才报恢复耗尽，已有效提交结果时正常结束。用户取消、累计额度耗尽、容器不可用或清理无法确认仍立即停止。
-- 支持 SDK 重试的 HTTP 模型接口配置 2 次重试（最多 3 次传输尝试），由 SDK 按错误类型处理；与模型修改参数或脚本后的再次执行分开计数。任务总额度与期限不因重试重置。
-
-旧记录、离线演示或未提供观测信息的适配器显示“未记录／不适用”，不把缺失的 token、耗时或重试次数补成 0。失败记录保留当前轨迹，显式重试会清除上一轮诊断，避免混入本轮结果。真实模型仍沿用下文的模型配置。
-
-### 大数据样例
-
-脚本只接受显式指定的独立SQLite文件，不会默认写入现有演示库：
-
-```powershell
-.\.venv\Scripts\python.exe scripts/seed_large_demo.py --database data/large-demo.db
-$env:RISK_DATABASE_URL = 'sqlite:///C:/完整项目路径/data/large-demo.db'
-.\.venv\Scripts\python.exe run.py
+```dotenv
+RISK_DATA_FETCHER=local
+RISK_PI_MODE=model
+RISK_PI_PROVIDER=deepseek
+RISK_PI_MODEL=deepseek-flash
+RISK_PI_API_KEY=<你的 API Key，勿提交到 Git>
+RISK_PI_THINKING_LEVEL=low
 ```
 
-启动后选择 `large-2026-10-28`。样例属于独立来源 `synthetic-large`，包含2024-11-30至2026-10-28的24期、82家行社、8项指标，共15744条原始观测。季度数据按真实季度末保留；同源同机构同指标同日期去重后，历史导出为12054条，不与原 `synthetic` 样例混用。导出值保留Decimal字符串和源观测ID，Parquet清单记录行数、来源、范围与hash。
+也支持 `RISK_PI_PROVIDER=openai`（配合 `RISK_PI_MODEL=gpt-5.4-mini`、`RISK_PI_API_KEY` 或 `RISK_OPENAI_ENV_FILE`）以及 `RISK_PI_BASE_URL` 指向兼容协议网关。
 
-容器默认限制为1 CPU、512MiB内存、64进程、单次最长60秒。仅任务data目录只读挂载、work目录可写；宿主可信meta目录不挂载。标准输出/错误输出各最多32KiB，work总量监测上限为100个文件或64MiB。该监测不是独立磁盘配额；具体限制及边界见[架构说明](docs/architecture.md)。
+### 关键运行参数
 
-## 3. 单页工作流程
-
-1. 点击“新建分析”，选择数据快照、分析方式和机构范围，输入分析要求后运行。
-2. 在“结果”中查看本次实际范围、触发事项及缺数／待配置情况；选择行社后内联查看证据和分析。
-3. 切换“轨迹”，核对模型请求、工具参数、耗时、错误、恢复次数和证据引用。
-4. 已完成任务的输入框切换为“追问 Pi”。规则监测按所选行社保存对话，自主分析按任务保存。Pi 结合最近六轮问答检索归档证据，回复后可以展开所引记录、查看本轮轨迹。
-5. 已完成任务可生成并下载草稿，失败任务可按原范围重试。
-6. 左侧历史合并两种任务。数据选项中可以导入 CSV／XLSX，成功后选择新快照，不自动执行分析。
-
-页面不再提供规则编辑、机构目录、模拟审批或发送操作。对应后端契约继续保留，避免界面精简改变业务控制。
-
-本轮留存的[单行社样例](docs/examples/issue-1-single-society.json)中，合成行社082的五级不良贷款率为3.15%、排名82/82，触发排名规则；Pi 经 MCP 查得逾期贷款率4.04%，以及8月、9月的不良贷款率3.07%、3.11%，分析引用了这些观测并生成[函件草稿](docs/examples/issue-1-letter.txt)。[默认规则批量样例](docs/examples/issue-1-batch.json)得到38家风险行社、49项触发、3项数据不足、82项占比待配置。这里验证的是实际 MCP、数据库查询与引用链路，模型响应仍为确定性替身。
-
-## 4. 本轮确认与暂定项
-
-| 内容 | 本版处理 |
-| --- | --- |
-| 机构层级 | 1我行、2地区、3行社、4支行、5预留机构；本期只监测第3级 |
-| 地区和行社数量 | 11个地区、82家行社；合成归属仅用于演示，不对应真实组织关系 |
-| 排名 | 暂沿用附件的 `rank >= 72`，82家全参评无并列时为11家；并列按条件全部命中 |
-| 排名来源 | 使用导入数据已有排名；监测过程中不重新计算排名 |
-| 占比 | 以“五级不良贷款率”演示比率规则；阈值默认空，正式指标口径和阈值待确认 |
-| 存在提醒 | 资金业务不良余额有效且非零即提醒；缺失与零分开 |
-| 规则组合 | 测试版每条规则独立触发，同一行社同次运行合并为一项事件；正式是否有AND组合待业务确认 |
-| 数据来源 | 页面支持CSV/XLSX导入；脚本支持SQLite/PostgreSQL标准视图只读导入 |
-| Agent | Pi 负责指标选择，经只读 MCP 补查当前值和历史，并提交有证据引用的分析；默认模型替身 |
-| 小Q | 尚未接入，实际协议、认证和请求/响应字段待提供，不假设兼容现有模型协议 |
-| 函件 | 当前为通用测试模板，正式模板尚未提供 |
-| 下发 | 页面只允许本地模拟；内部风险管理系统的真实协议未知 |
-
-“排名后72”仍有边界歧义，本版选择第72名及以后，依据为已上传提示词。它不表示“最后72家”。
-
-## 5. 数据导入
-
-页面可下载空白CSV表头；Excel请整理成同样列名的单个工作表。不要直接上传指标名称目录：监测需要机构、日期和数值。
-
-| 字段 | 含义 | 示例 |
+| 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| org_code | 系统内已存在的机构代码，保留文本格式 | LS072 |
-| indicator_id | 系统内已有指标ID | npl_ratio |
-| data_date | 该指标实际数据日期 | 2026-10-28 |
-| value | 普通数值；空值表示缺失 | 1.65 |
-| unit | `%` 或 `元`，与目录一致 | % |
-| rank | 已有排名，可空 | 72 |
-| population | 排名参评数量，可空 | 82 |
-| rank_scope | 排名范围 | province_societies |
-| value_encoding | 百分比数值用percent_number；金额用raw | percent_number |
+| `RISK_DATA_FETCHER` | `local` | `local`（本地 SQLite 快照）或 `quickbi`（内网 QuickBI OLAP） |
+| `RISK_DATABASE_URL` | `sqlite:///data/risk-testdata.db` | 应用归档库连接串，支持 SQLite（WAL）与 PostgreSQL |
+| `RISK_AUTO_REPORT_MAX` | `8` | 全辖扫描后后台自动生成重点风险报告的单批上限 |
+| `RISK_PI_THINKING_LEVEL` | `low` | 思考模型推理深度（`off` / `low` / `medium` / `high`） |
+| `RISK_PI_TIMEOUT_MS` | `90000` | 单次模型请求超时预算（毫秒） |
+| `RISK_PI_BATCH_TIMEOUT_MS` | `360000` | 批量风险归并总截止预算（毫秒） |
+| `RISK_CODEMODE` | `0` | 设为 `1` 启用可选 QuickJS `risk_js` 实验通道 |
 
-示例仅为合成数据：
+内网 QuickBI 接入所需的 `IDENTITY_PROVIDER=smartq_ticket`、`SMARTQ_SVC_URL`、`QB_HOST`、`QB_REPORT_ID`、`RISK_QUICKBI_DICT_FILE`、`RISK_QUICKBI_ORG_FILE` 等完整说明，请参见 [QuickBI 内网取数配置文档](docs/quickbi-integration.md)。
 
-```csv
-org_code,indicator_id,data_date,value,unit,rank,population,rank_scope,value_encoding
-LS072,npl_ratio,2026-10-28,1.65,%,72,82,province_societies,percent_number
-LS072,funds_npl_balance,2026-09-30,120000,元,,,,raw
-```
+---
 
-`1.65 + % + percent_number` 表示1.65%，不会再乘100。Excel原生百分比单元格（底层0.0165、显示1.65%）需要先转换为明确的普通数值；导入器会拒绝这种隐含编码，不猜单位。Excel公式也需先转换为已核验数值。
+## 项目结构与文档索引
 
-本版限制每次5MB、10000条记录。一个快照对同一机构、同一指标只接受一个有效期次；重复、未知机构/指标、非法日期、非有限值和单位冲突会整批拒绝。不同频率指标允许各自的数据日期。
-
-内置目录：
-
-| ID | 指标 |
-| --- | --- |
-| npl_ratio | 五级不良贷款率 |
-| overdue_ratio | 逾期贷款率 |
-| new_npl_ratio | 不良发生净生成率 |
-| deposit_growth | 各项存款余额（人行）比年初增幅 |
-| funds_npl_balance | 资金业务不良余额 |
-| funds_npl_change | 资金业务不良余额比年初增量 |
-| pure_deposit_growth | 纯存款余额比年初增幅 |
-| funds_npl_ratio | 资金业务不良率 |
-
-真实机构代码和指标目录的维护页面尚未实现。当前可使用合成代码测试，也可在首次初始化前修改 `backend/seed.py`；不要通过改名让合成数据看起来像真实经营数据。
-
-## 6. 数据库来源与DataWorks
-
-DataWorks是一套数据开发治理平台，可以连接不同计算引擎与数据源。后续要确认实际引擎、表/视图、字段、取数权限和网络可达性，不能把“有DataWorks权限”直接当成某种数据库连接协议。
-
-本版的 `scripts/import_from_database.py` 只读固定标准视图 `risk_indicator_export`，字段与上表一致。源端账号必须已经具有只读权限；脚本也会为PostgreSQL设置只读事务，为SQLite设置query_only。该脚本不接受任意SQL。
-
-先启动本地应用，再配置环境变量并调用脚本：
-
-```powershell
-$env:RISK_SOURCE_DATABASE_URL = 'sqlite:///C:/path/to/test_source.db'
-.\.venv\Scripts\python.exe scripts/import_from_database.py --date 2026-10-28
-```
-
-使用PostgreSQL来源需先安装 `requirements-postgresql.txt`，并将连接信息通过环境变量提供。不要将真实密码提交到代码中。MaxCompute、Hologres等实际环境的专用适配器需在确认连接方式后实现。
-
-应用自身也可切换PostgreSQL：设置 `RISK_DATABASE_URL` 为SQLAlchemy的 `postgresql+psycopg://...` 连接串后启动。当前已验证SQLite运行；PostgreSQL连接路径预留，未连接真实实例做联调。
-
-两个连接变量职责不同：`RISK_DATABASE_URL` 是保存任务、函件和已导入/合成快照的应用库；`RISK_SOURCE_DATABASE_URL` 仅供上述显式导入脚本读取指标源，不进入应用建表或种子初始化。当前 MCP 查询的是应用库内已固定的快照。TBase/PostgreSQL 协议指标源的真实表、字段与权限契约尚未取得，尚未完成实时外部数据库联调。
-
-导入脚本的 `--date` 按来源记录的精确日期筛选；MCP 的“截至日最新值”查询则按指标实际日期取值，可以取到上期季度指标，两种日期语义不能互换。
-
-## 7. 代码结构与阅读顺序
+### 代码目录
 
 | 路径 | 职责 |
 | --- | --- |
-| backend/models.py | 机构、指标、快照、事实、规则、任务、事件、函件、修订与审计模型 |
-| backend/seed.py | 合成机构、指标与3个数据快照，方便重复演示 |
-| backend/app.py | API、导入校验、任务短事务与函件状态处理 |
-| backend/services.py | API/MCP共用的目录查询、固定上下文、指标取证、纯规则检测与模板读取 |
-| backend/mcp_server.py | FastMCP stdio服务；由宿主绑定任务与行社，只暴露4个只读业务工具 |
-| backend/analysis.py | Python 与 Pi Agent 的 JSON 进程调用边界、结果校验与超时处理 |
-| backend/code_tasks.py | 自主分析任务、执行证据核验与分析函草稿 |
-| backend/task_workspace.py | 任务文件、流式Parquet导出、宿主可信清单与原始证据复核 |
-| sandbox/ | 固定分析镜像与容器内risk_client取数接口 |
-| agent/src/code-exploration.ts | 全机构范围的代码编写、执行、纠错和结构化提交 |
-| scripts/seed_large_demo.py | 显式目标库的大规模合成样例，不改变默认演示库 |
-| agent/src/contracts.ts | Agent 请求、结果、证据和运行轨迹的 TypeScript 类型契约 |
-| agent/src/mcp-business.ts | 薄MCP客户端；绑定机构、调用业务工具、分类错误并关闭子进程 |
-| frontend/src/api.ts | 页面共用的 JSON 请求、文件上传及接口错误处理 |
-| agent/ | TypeScript Pi Agent、业务工具、模型接入、离线演示与契约测试；dist 为编译产物 |
-| frontend/ | Vue3/TypeScript页面源码与已编译dist |
-| scripts/import_from_database.py | 固定标准视图的只读数据导入 |
-| tests/ | 规则边界、数据校验、函件版本与模拟下发的回归验证 |
-| docs/architecture.md | 结构说明、业务边界及后续实现路径 |
+| `backend/app.py` | FastAPI 路由入口、请求校验、短事务与报告/导出/清理接口 |
+| `backend/models.py` | SQLAlchemy 数据模型（机构、指标、快照、观测、任务、函件与版本历史） |
+| `backend/risk_scans.py` | 全辖五维风险扫描、后台自动生成重点报告队列、归档取证封装 |
+| `backend/risk_letter.py` | 风险报告只读取证、底线与护栏校验、财务两位小数展示格式化 |
+| `backend/docx_export.py` | 零第三方依赖的标准银行公文 OOXML（`.docx`）排版生成器 |
+| `backend/run_cleanup.py` | 事务级加锁的历史任务安全删除与失败任务批量清理 |
+| `backend/verification_primitives.py` | L1 确定性金融计算原语（单位、精度、排名、聚合校验） |
+| `backend/verification_layer.py` | L2 7 大标准分析算子与后置恒等核验契约 |
+| `backend/metric_validator.py` | 源表口径体检、全省/地区合计勾稽与权限裁剪校验 |
+| `backend/data_fetcher.py` | 统一只读 `DataFetcher` 协议与本地快照实现 |
+| `backend/quickbi_client.py` | QuickBI 合规票据纯 HTTP 免登身份层、OpenAPI 签名与 OLAP 表单客户端 |
+| `backend/quickbi_adapter.py` | QuickBI 长表/宽表动态 `fid` 取数适配器与实时指标清单 |
+| `backend/mcp_server.py` | FastMCP 只读业务工具服务（stdio 子进程） |
+| `backend/smartq_followup.py` | 小 Q 追问自动改写与流式补查编排 |
+| `backend/code_tasks.py` / `sandbox/` | Docker 隔离沙箱自主 Python 分析与 Parquet 导出核验 |
+| `agent/` | TypeScript Pi Agent（风险归并、撰函、追问、代码分析、Model Tap） |
+| `frontend/` | Vue 3 + TypeScript 单页工作台（总览、风险报告、折叠时间轴、历史管理） |
+| `scripts/` | 本地测试数据导入、大数据样例生成与外部只读视图导入脚本 |
+| `tests/` | 后端业务、QuickBI 协议桩、核验算子、Word 导出与清理回归测试 |
 
-运行测试：
+### 设计与规格文档
+
+- [系统架构说明](docs/architecture.md)
+- [风险提示函可扩展工具架构规格（v3.2）](docs/risk-letter-spec.md)
+- [确定性核验层与 7 大算子规格说明书](docs/verification-layer-spec.md)
+- [第一梯队体验升级设计规格（自动报告 / 公文精修 / 时间轴折叠）](docs/tier1-upgrade-spec.md)
+- [QuickBI 内网身份层与 OLAP 取数配置说明](docs/quickbi-integration.md)
+- [小 Q 补查问句库规范](docs/smartq-question-bank.md)
+- [Code Mode 实验说明](docs/codemode-poc.md)
+
+---
+
+## 测试与验证
+
+安装开发测试依赖后即可运行全套三端自动化测试：
 
 ```powershell
+# 后端 Python 回归测试（排除需要本机 Docker 引擎的容器用例可加 -k "not docker"）
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m pytest tests -q
+.\.venv\Scripts\python.exe -m pytest tests/test_auto_reports.py tests/test_docx_export.py tests/test_formal_display.py tests/test_run_cleanup.py tests/test_quickbi_adapter.py tests/test_smartq_followup.py tests/test_verification_layer.py tests/test_verification_primitives.py tests/test_risk_scan_workflow.py tests/test_services.py tests/test_query_budget.py tests/test_api_workflow.py -q
+
+# Pi Agent (TypeScript / Node) 契约与单测
+npm.cmd --prefix agent run build
 npm.cmd --prefix agent test
+
+# 前端 TypeScript 校验、单元测试与生产构建
+npm.cmd --prefix frontend run typecheck
+npm.cmd --prefix frontend test
+npm.cmd --prefix frontend run build
 ```
 
-复用时，Python 调用 `provider.select(topic, indicators, mandatory_ids)` 或 `provider.explain_batch(cases, context)`；分析请求只带触发证据与固定任务上下文，不预装辅助数组，辅助值由 MCP 实际查询取得。TypeScript 调用 `runRequest(request, options?)`，输入输出类型见 `contracts.ts`。CLI 入口 `runner.ts` 只负责 JSON 读写。前端的 `api<T>()` 与 `send<T>()` 集中处理 HTTP，页面只维护业务状态。
+> 使用「自主代码分析」前需构建离线沙箱镜像：
+> ```powershell
+> docker build -t risk-python-sandbox:0.1 sandbox
+> ```
 
-编辑 Agent 时，在项目根目录运行 `npm.cmd --prefix agent run build`。编辑前端时，在 `frontend/` 运行 `npm ci --ignore-scripts`、`npm run build`；Python 服务提供编译后的页面，不使用外部 CDN。
+---
 
-### Pi Agent 的运行模式
+## 已知边界与后续规划
 
-使用的是 GitHub 上原 `badlogic/pi-mono` 项目，现已迁移到 [earendil-works/pi](https://github.com/earendil-works/pi)。本版锁定 `@earendil-works/pi-agent-core` 与 `@earendil-works/pi-ai` 1.4.0、`@modelcontextprotocol/sdk` 1.32.2、Python `fastmcp` 4.1.4。
-
-默认 `RISK_PI_MODE=demo`。自主分析使用代码执行工具，替身演示一次真实脚本错误与修正；原规则监测的指标选择使用本地目录工具，事件分析通过 MCP 执行 `search_indicators`、`query_metrics`、`check_risks`、`get_letter_template` 等只读业务查询，再由本地 `submit_analysis` 提交结构化结果。模型响应由确定性逻辑生成，具体查询仍真实访问数据库。此模式无需 API 密钥，也不会发送指标数据到外部服务。
-
-启动程序读取项目根目录下由 Git 忽略的 `.env`。已有 OpenAI 密钥文件时，可写入以下本机配置，再运行 `start_windows.bat`。服务端从指定文件读取 `OPENAI_API_KEY`。
-
-```dotenv
-RISK_PI_MODE=model
-RISK_PI_PROVIDER=openai
-RISK_PI_MODEL=gpt-5.4-mini
-RISK_OPENAI_ENV_FILE=C:/实际目录/.env.local
-```
-
-也可以通过进程环境变量直接配置 Pi 模型。
-
-```powershell
-$env:RISK_PI_MODE = 'model'
-$env:RISK_PI_PROVIDER = '<Pi 内置目录中的供应商 ID>'
-$env:RISK_PI_MODEL = '<模型 ID>'
-$env:RISK_PI_API_KEY = '<该服务的 API 密钥>'
-.\.venv\Scripts\python.exe run.py
-```
-
-`RISK_PI_PROVIDER` 与 `RISK_PI_MODEL` 的组合必须存在于 Pi 内置模型目录。可选 `RISK_PI_BASE_URL` 用于替换为采用同一协议的 HTTP(S) 服务地址，不能在 URL 内嵌用户名或密码；它不能把任意小Q接口自动转换成兼容协议。
-
-仅对获准的模型服务和数据启用 `model` 模式：该模式会将本次指标目录、风险证据及工具查询结果发送给所配置的模型。密钥通过环境变量提供，不写进代码或 Git。缺少配置、模型失败、结果不合格或执行超时会记录失败，不会悄悄改用演示结果。小Q需确认协议后接入。
-
-Python 保留应用状态、取数授权、规则计算、函件审核和模拟下发。自主分析只调用一次覆盖整个范围的 `explore`；代码可计算派生分析结果，但不能修改源观测、已发布规则或审批状态。原规则监测仍分别调用一次Pi指标选择和一次批量证据分析。
-
-### 固定上下文、失败重试与预算
-
-任务创建时固定 `run_id / topic / snapshot_id / as_of / rule_snapshot / org_scope / history_snapshot_ids / source`，存入 `run.selection.task_context`。MCP 从已提交任务加载范围，并按当前行社进一步收窄；模型不能指定另一个任务。后续规则修改、新导入或不同来源数据不会混入本次分析。详情见[架构说明](docs/architecture.md)。
-
-运行先提交 `running` 任务和检测证据，再在写事务外调用 Pi/MCP，最后用新短事务保存 `completed` 或 `failed`。失败保留已提交证据，暂不可拟函。第一次执行失败返回 HTTP 502，`detail` 为 `{ "run_id": "...", "message": "..." }`；重复提交相同输入默认返回已有任务，包括 `failed` 状态。修复原因后向 `/api/runs` 提交相同输入并显式设置 `"retry": true` 才会重试；条件更新只允许一个请求执行该次重试。改变规则版本、主题、机构范围或模型配置会形成不同运行身份。
-
-`RISK_PI_BATCH_TIMEOUT_MS` 默认120000毫秒，控制每次 Node 请求的任务预算；Python 使用同一值并额外留10秒退出清理。每个行社另受 `RISK_PI_TIMEOUT_MS`（默认30000毫秒）、`RISK_PI_MAX_REQUESTS`（默认10）、`RISK_PI_MAX_TOOLS`（默认12）限制。Node 在完成、失败或取消时关闭 MCP 会话；若超出清理余量，Python 终止该任务进程树。当前仍为同步任务，没有持久 worker；服务被强制终止后可能留下 `running` 记录，尚未实现自动恢复或租约接管。
-
-## 8. 尚未实现的部分
-
-- 未连接真实DataWorks数据源、小Q模型接口或内部风险管理系统。
-- 监测为本地小批次同步执行，已有运行去重、失败记录和显式重试；尚未实现持久worker、强制进程崩溃后的恢复、跨进程任务租约和自动调度。
-- 当前没有生产登录、机构数据权限或正式授权策略。默认仅绑定127.0.0.1，适用于本地测试。
-- 模拟下发验证版本与状态，不等于实现真实渠道的outbox、重试和送达确认。
-- 日频7天、季频120天为可见的测试新鲜度策略，正式运行需按行内数据更新周期配置。
-- 函件关键事实来自固定证据；人工编辑后的自由文本尚未实现自动语义核验。
-- 正式函件模板、占比阈值、比率口径、排名边界与规则组合需要业务确认。
-
-## 9. 接下来怎样补后端和数据库知识
-
-先读 `models.py`，理解为什么指标定义、指标事实、快照和函件修订分表；再读 `services.py` 的 `evaluate()` 与 `query_metrics()`，区分规则检测、缺数和截至日取证；最后读 `app.py` 的短事务与函件状态API，理解事务、乐观并发与幂等。
-
-随后阅读 `backend/analysis.py`、`backend/mcp_server.py` 与 `agent/`，跟踪“固定任务 → Pi发起MCP查询 → 数据库返回证据 → 引用校验 → 函件草稿”。
-
-资料：
-
-- [李博杰《深入理解AI Agent》](https://github.com/bojieli/ai-agent-book)
-- [FastAPI数据库文档](https://fastapi.tiangolo.com/tutorial/sql-databases/)
-- [阿里云：什么是DataWorks](https://help.aliyun.com/zh/dataworks/user-guide/what-is-dataworks)
+- **权限与多租户**：当前默认绑定 `127.0.0.1` 用于单人/演示工作台；生产部署需配合行内统一认证网关与按身份隔离的归档库。
+- **内网实机联调**：QuickBI 合规票据免登与 `olapQueryParam` 表单协议已完成本地 HTTP 协议桩全链路验证，部署内网后需结合实际账号校验行级权限裁剪与宽表度量映射。
+- **后续演进方向**：流式实时思考轨迹推送（SSE）、公开银行风险报告语料库驱动的撰函评测基准，以及企业级持久化异步任务队列。

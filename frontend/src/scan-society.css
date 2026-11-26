@@ -1,0 +1,145 @@
+/* 行社详情与原始观测在清单下展开；长证据标识和草稿在本栏内换行。 */
+.scan-society {
+  min-width: 0;
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.society-heading,
+.society-issue-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 12px;
+}
+.society-heading > span,
+.society-issue-heading > span,
+.society-data-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+.society-data-note,
+.society-error {
+  margin: 10px 0;
+}
+.society-error {
+  color: var(--error);
+}
+.society-issue {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.society-issue dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px 12px;
+  margin: 9px 0;
+  line-height: 1.65;
+}
+.society-issue dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+.society-issue dd {
+  margin: 0;
+}
+.society-citations summary,
+.society-disclosure {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 13px;
+}
+.society-citations div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+}
+.society-citations button {
+  max-width: 100%;
+  min-height: 30px;
+  padding: 2px 4px;
+  color: var(--accent);
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.society-observations {
+  margin: 12px 0;
+}
+.society-disclosure {
+  padding: 6px 0;
+}
+.society-disclosure::before {
+  content: '▸';
+  margin-right: 6px;
+}
+.society-disclosure[aria-expanded='true']::before {
+  content: '▾';
+}
+.society-evidence-scroll {
+  max-height: 390px;
+  overflow: auto;
+  margin: 6px 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.society-evidence-scroll th {
+  position: sticky;
+  top: 0;
+}
+.society-evidence-scroll tr.referenced td {
+  background: var(--accent-soft);
+}
+.society-evidence-scroll tr[data-located='true'] {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  scroll-margin-top: 36px;
+}
+.society-letter pre {
+  max-height: 360px;
+  margin: 10px 0 0;
+  padding: 12px;
+  overflow: auto;
+  background: var(--surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.7;
+}
+@media (max-width: 620px) {
+  .society-evidence-scroll thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .society-evidence-scroll :is(table, tbody, tr) {
+    display: block;
+  }
+  .society-evidence-scroll td {
+    display: grid;
+    grid-template-columns: 4.3em minmax(0, 1fr);
+    gap: 0 6px;
+    border: 0;
+    padding: 2px 10px;
+  }
+  .society-evidence-scroll td::before {
+    content: attr(data-label);
+    color: var(--muted);
+  }
+  .society-evidence-scroll td > small {
+    grid-column: 2;
+  }
+  .society-evidence-scroll td:first-child {
+    border-top: 1px solid var(--line);
+    padding-top: 9px;
+  }
+  .society-evidence-scroll td:last-child {
+    padding-bottom: 9px;
+  }
+}

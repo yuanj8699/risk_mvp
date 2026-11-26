@@ -26,14 +26,14 @@ DIAGNOSTIC_MAX_EVENTS = 1000
 DIAGNOSTIC_MAX_BYTES = 1024 * 1024
 
 
-def task_budget_ms() -> int:
+def task_budget_ms(setting: str = "RISK_PI_BATCH_TIMEOUT_MS", default: str = "360000") -> int:
     """Python与TS使用同一整批期限；额外10秒仅留给MCP退出清理。"""
     try:
-        budget = int(os.getenv("RISK_PI_BATCH_TIMEOUT_MS", "120000"))
+        budget = int(os.getenv(setting, default))
     except ValueError as exc:
-        raise AnalysisError("RISK_PI_BATCH_TIMEOUT_MS必须是整数") from exc
+        raise AnalysisError(f"{setting}必须是整数") from exc
     if not 1 <= budget <= 600000:
-        raise AnalysisError("RISK_PI_BATCH_TIMEOUT_MS必须在1至600000之间")
+        raise AnalysisError(f"{setting}必须在1至600000之间")
     return budget
 
 
@@ -234,6 +234,7 @@ class PiAnalysisProvider:
             "version": self.version,
             "provider": os.getenv("RISK_PI_PROVIDER", ""),
             "model": os.getenv("RISK_PI_MODEL", ""),
+            "thinking_level": os.getenv("RISK_PI_THINKING_LEVEL", "auto"),
             "base_url": os.getenv("RISK_PI_BASE_URL", ""),
             "codemode": os.getenv("RISK_CODEMODE", "0"),
         }
@@ -250,6 +251,13 @@ class PiAnalysisProvider:
         payload = {**payload, "budget_ms": budget_ms}
         env = {**os.environ, "RISK_PYTHON_EXECUTABLE": sys.executable,
                "RISK_PROJECT_ROOT": str(ROOT), "RISK_PI_BATCH_TIMEOUT_MS": str(budget_ms)}
+        if payload.get("operation") == "draft_risk_letter" and "RISK_DATABASE_URL" not in env:
+            # QuickBI 的本地归档与合成库使用不同默认地址；只传归档库连接给只读 MCP。
+            from .models import DATABASE_URL
+            env["RISK_DATABASE_URL"] = DATABASE_URL
+        # Pi 只接收已取回的业务证据；内网签名和会话凭据留在取数进程。
+        for key in ("QB_ACCESS_ID", "QB_ACCESS_SECRET", "QB_COOKIE", "QB_CSRF_TOKEN", "QB_ACCESS_TICKET"):
+            env.pop(key, None)
         try:
             with subprocess.Popen(
                 [node, str(RUNNER_PATH)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -338,11 +346,29 @@ class PiAnalysisProvider:
         return cast(dict[str, CaseAnalysis], analyses)
 
     def follow_up(self, question: str, history: list[JsonObject], context: JsonObject,
-                  evidence: list[JsonObject]) -> JsonObject:
-        """只给 Pi 当前任务已归档的证据。回复引用从宿主证据重建，再交业务层保存。"""
-        result = self._request({"operation": "follow_up", "question": question, "history": history,
-                                "context": context, "evidence": evidence})
+                  evidence: list[JsonObject], smartq: JsonObject | None = None) -> JsonObject:
+        """接收一次只读补查提议或最终回答。引用必须来自宿主本轮送入的证据。"""
+        payload = {"operation": "follow_up", "question": question, "history": history,
+                   "context": context, "evidence": evidence}
+        if smartq is not None:
+            payload["smartq"] = smartq
+        result = self._request(payload)
         diagnostics = result_diagnostics(result)
+        if not diagnostics or diagnostics.get("runtime", {}).get("mode") not in {"model", "demo"}:
+            raise AnalysisError("Pi 追问缺少运行模式。", diagnostics=diagnostics)
+        if "smartq_lookup" in result:
+            lookup = result["smartq_lookup"]
+            limits = {"rewritten_question": 300, "reason": 500, "metric_hint": 300,
+                      "target_org": 300, "target_date": 64}
+            types = ("single", "total", "diff", "ratio", "rank", "extremum",
+                     "detail", "count", "yoy", "mom", "check", "filter", "other")
+            if (not smartq or not smartq.get("enabled") or smartq.get("attempted")
+                    or not isinstance(lookup, dict) or lookup.get("query_type") not in types
+                    or any(not isinstance(lookup.get(key), str) or not lookup[key].strip()
+                           or len(lookup[key]) > limit for key, limit in limits.items())):
+                raise AnalysisError("Pi 返回了无效的小 Q 补查请求。", diagnostics=diagnostics)
+            return {"smartq_lookup": {key: lookup[key].strip() for key in (*limits, "query_type")},
+                    "diagnostics": diagnostics}
         answer, ids = result.get("answer"), result.get("evidence_ids")
         if not isinstance(answer, str) or not answer.strip() or len(answer) > 4000:
             raise AnalysisError("Pi 追问未返回有效答复。", diagnostics=diagnostics)
@@ -351,9 +377,58 @@ class PiAnalysisProvider:
                 or any(not isinstance(key, str) or key not in by_id for key in ids)
                 or len(set(ids)) != len(ids)):
             raise AnalysisError("Pi 答复的证据引用无效。", diagnostics=diagnostics)
-        if not diagnostics or diagnostics.get("runtime", {}).get("mode") not in {"model", "demo"}:
-            raise AnalysisError("Pi 追问缺少运行模式。", diagnostics=diagnostics)
         return {"answer": answer.strip(), "evidence": [by_id[key] for key in ids], "diagnostics": diagnostics}
+
+    def draft_risk_letter(self, brief: JsonObject) -> JsonObject:
+        """使用单次独立 Pi 会话撰函，不接受未通过宿主复核的工具结果。"""
+        from .risk_letter import validate_letter
+        try:
+            setting = 'RISK_PI_LETTER_TIMEOUT_MS' if 'RISK_PI_LETTER_TIMEOUT_MS' in os.environ else 'RISK_PI_BATCH_TIMEOUT_MS'
+            result = self._request({'operation': 'draft_risk_letter', 'brief': brief}, task_budget_ms(setting, '120000'))
+        except AnalysisError as exc:
+            for event in reversed((exc.diagnostics or {}).get('trace', [])):
+                if event.get('tool') == 'submit_risk_letter' and event.get('error'):
+                    reason = event['error'].get('message', '')
+                    raise AnalysisError(f'{exc}；最近一次提交错误：{reason}', diagnostics=exc.diagnostics) from exc
+            raise
+        letter = result.get('letter')
+        diagnostics = result_diagnostics(result)
+        read_ids = result.get('read_evidence_ids')
+        if not isinstance(read_ids, list) or any(not isinstance(ref, str) for ref in read_ids):
+            raise AnalysisError('Pi 撰函缺少有效的本轮实查证据清单。', diagnostics=diagnostics)
+        try:
+            validate_letter(brief, letter, read_ids)
+        except AnalysisError as exc:
+            raise AnalysisError(str(exc), diagnostics=diagnostics) from exc
+        mode = (diagnostics or {}).get('runtime', {}).get('mode')
+        if mode not in {'model', 'demo'}:
+            raise AnalysisError('Pi 撰函缺少运行模式。', diagnostics=diagnostics)
+        return {'letter': letter, 'diagnostics': {**diagnostics, 'mode': 'pi-' + mode},
+                'read_evidence_ids': read_ids}
+
+    def synthesize_risks(self, knowledge_prompt: str, dimension_ids: list[str],
+                         validation_summary: JsonObject, candidates: list[JsonObject]) -> JsonObject:
+        """归并结果只能引用该行社本次有效观测；宿主再次核对跨进程结果。"""
+        result = self._request({"operation": "synthesize_risks", "knowledge_prompt": knowledge_prompt,
+                                "dimension_ids": dimension_ids, "validation_summary": validation_summary,
+                                "candidates": candidates})
+        diagnostics = result_diagnostics(result)
+        allowed = {c["org_id"]: {e["evidence_id"] for e in c["evidence"]
+                                  if e.get("usable", True) and e.get("quality_status") == "valid" and e.get("value") is not None}
+                   for c in candidates}
+        issues = result.get("issues")
+        if not isinstance(issues, list) or not isinstance(result.get("executive_summary"), str):
+            raise AnalysisError("Pi 风险归并结果格式错误。", diagnostics=diagnostics)
+        for issue in issues:
+            if not isinstance(issue, dict) or issue.get("org_id") not in allowed or issue.get("dimension_id") not in dimension_ids:
+                raise AnalysisError("Pi 风险归并返回未知机构或风险面。", diagnostics=diagnostics)
+            ids = issue.get("evidence_ids")
+            if not isinstance(ids, list) or not ids or any(not isinstance(i, str) or i not in allowed[issue["org_id"]] for i in ids):
+                raise AnalysisError("Pi 风险归并引用了无效或跨机构证据。", diagnostics=diagnostics)
+            if any(not isinstance(issue.get(k), str) or not issue[k].strip() for k in
+                   ("aspect", "title", "severity", "cause_analysis", "check_suggestion")):
+                raise AnalysisError("Pi 风险归并事项字段不完整。", diagnostics=diagnostics)
+        return result
 
     def explore(self, context: JsonObject) -> JsonObject:
         """整个任务范围的一次代码探索；只返回摘要、引用与执行产物身份。"""

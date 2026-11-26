@@ -4,10 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test test/*.test.mjs",
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "tdesign-icons-vue-next": "^0.4.12",
+    "tdesign-vue-next": "^1.20.11",
     "vue": "^3.5.13"
   },
   "devDependencies": {

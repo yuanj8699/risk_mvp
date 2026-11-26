@@ -20,8 +20,9 @@ try {
     let bytes = 0;
     for await (const chunk of process.stdin) {
         bytes += chunk.length;
-        if (bytes > 5 * 1024 * 1024) {
-            throw new RiskAgentError("INVALID_INPUT", "Agent请求超过5MB");
+        // 全辖归档含多期证据，允许宿主一次传入完整证据；模型仍只能逐页检索。
+        if (bytes > 128 * 1024 * 1024) {
+            throw new RiskAgentError("INVALID_INPUT", "Agent请求超过128MB");
         }
         chunks.push(chunk);
     }

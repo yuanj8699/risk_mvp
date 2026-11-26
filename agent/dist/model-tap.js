@@ -76,12 +76,13 @@ export function createModelTap(entry, model, context, base, live, secrets) {
     let providerReasoning = "", providerClipped = false, usageSeen = false;
     let reasoningTokens = null;
     // 留出最长已知密钥的完整尾部，先脱敏再截展示内容，防止截断点拆开密钥。
-    const reasoningBufferLimit = 8000 + Math.max(256, ...secrets.map(secret => secret.length));
+    const reasoningLimit = model.provider === 'deepseek' ? 256 * 1024 : 8000;
+    const reasoningBufferLimit = reasoningLimit + Math.max(256, ...secrets.map(secret => secret.length));
     function setReasoning(text, source, clipped = false) {
         const safe = redactText(text, secrets, true);
         entry.reasoning_source = source;
-        entry.reasoning_content = clip(safe, 8000);
-        entry.reasoning_truncated = clipped || safe.length > 8000;
+        entry.reasoning_content = clip(safe, reasoningLimit);
+        entry.reasoning_truncated = clipped || safe.length > reasoningLimit;
     }
     const endpoints = [];
     entry.reasoning_content = null;
@@ -121,7 +122,6 @@ export function createModelTap(entry, model, context, base, live, secrets) {
                     providerReasoning += clip(delta, room);
                     if (delta.length > room)
                         providerClipped = true;
-                    setReasoning(providerReasoning, "provider_reasoning_content", providerClipped);
                 }
             }
             await base.onProviderStreamEvent?.(data, actualModel);
@@ -157,6 +157,8 @@ export function createModelTap(entry, model, context, base, live, secrets) {
     function finish(message, failure) {
         if (entry.status !== "running")
             return;
+        if (providerReasoning)
+            setReasoning(providerReasoning, 'provider_reasoning_content', providerClipped);
         entry.duration_ms = performance.now() - started;
         const code = failure?.code;
         entry.status = ["TIMEOUT", "CANCELLED"].includes(code ?? "") || message?.stopReason === "aborted" ? "cancelled" : failure || message?.stopReason === "error" ? "error" : "ok";

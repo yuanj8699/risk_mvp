@@ -7,13 +7,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Type, createAssistantMessageEventStream } from '@earendil-works/pi-ai';
 import { stream as completionStream } from '@earendil-works/pi-ai/api/openai-completions';
+import { builtinModels } from '@earendil-works/pi-ai/providers/all';
 import { runAgent, toolStream } from '../dist/runtime.js';
 import { createModelTap, sanitize, safeError, boundedDiagnostics } from '../dist/model-tap.js';
 
 const model = { id:'local-tap-fixture', name:'Local HTTP replay (not a real LLM)', api:'openai-completions', provider:'openai', baseUrl:'http://127.0.0.1/unused', reasoning:true, input:['text'], contextWindow:32000,maxTokens:4000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0} };
 const config = {mode:'model',env:{},model,apiKey:'fixture-key-not-a-credential',limits:{requests:10,tools:12,timeoutMs:10000,batchTimeoutMs:10000}};
 
-test('local HTTP SSE records two real retries, public reasoning, usage and tool return bytes',async()=>{
+for (const level of [undefined, 'off']) test(`DeepSeek local SSE: ${level ?? 'default low'}, two requests and tool replay`,async()=>{
   let attempts=0; let output;
   const bodies=[];
   const server=http.createServer(async(request,response)=>{
@@ -25,7 +26,7 @@ test('local HTTP SSE records two real retries, public reasoning, usage and tool 
     const args=final?{}:{org_id:'LS082',api_key:config.apiKey,code:'console.log("fixture");\n'.repeat(150)};
     response.writeHead(200,{'Content-Type':'text/event-stream'});
     const emit=chunk=>response.write(`data: ${JSON.stringify({id:'fixture',object:'chat.completion.chunk',created:1,model:model.id,...chunk})}\n\n`);
-    emit({choices:[{index:0,delta:{role:'assistant',reasoning_content:final?'本地回放：公开结果核对。':'公开片段'.repeat(1250),signature:'signature-must-not-be-recorded'}}]});
+    if (!level) for (const part of (final ? ['本地回放：','公开结果核对。'] : ['公开片段'.repeat(1250),'第二段'.repeat(1250)])) emit({choices:[{index:0,delta:{role:'assistant',reasoning_content:part,signature:'signature-must-not-be-recorded'}}]});
     emit({choices:[{index:0,delta:{tool_calls:[{index:0,id:`call-${tool}`,type:'function',function:{name:tool,arguments:JSON.stringify(args)}}]}}]});
     emit({choices:[{index:0,delta:{},finish_reason:'tool_calls'}]});
     emit({choices:[],usage:{prompt_tokens:100,completion_tokens:30,total_tokens:130,prompt_tokens_details:{cached_tokens:5},...(final?{}:{completion_tokens_details:{reasoning_tokens:10}})}});
@@ -33,15 +34,22 @@ test('local HTTP SSE records two real retries, public reasoning, usage and tool 
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   try{
-    const localModel={...model,baseUrl:`http://127.0.0.1:${server.address().port}/v1`};
+    const models=builtinModels();
+    const localModel={...models.getModel('deepseek','deepseek-flash'),baseUrl:`http://127.0.0.1:${server.address().port}/v1`};
     const tools=[{name:'lookup',label:'lookup',description:'fixture lookup',parameters:Type.Object({org_id:Type.String(),api_key:Type.String(),code:Type.String()}),execute:async()=>({content:[{type:'text',text:JSON.stringify({evidence_id:'fixture-ev-1',value:'1.2%'})}],details:{evidence_ids:['fixture-ev-1']}})},
       {name:'complete',label:'complete',description:'fixture completion',parameters:Type.Object({}),execute:async()=>{output={completed:true};return {content:[{type:'text',text:'accepted'}],details:{},terminate:true};}}];
-    const result=await runAgent({...config,model:localModel,stream:completionStream},tools,'local fixture, no real LLM',()=>output,10000,{phase:'explain',caseKey:'LS082',requestContext:()=>({fixture:'local HTTP replay'}),fatal:()=>undefined,cancel:()=>{},demoStream:completionStream});
+    const result=await runAgent({...config,env:{RISK_PI_THINKING_LEVEL:level},model:localModel,stream:(model,context,options)=>{assert.equal(options.reasoning,level ? undefined : 'low');return models.streamSimple(model,context,options);}},tools,'local fixture, no real LLM',()=>output,10000,{phase:'draft_risk_letter',caseKey:'LS082',requestContext:()=>({fixture:'local HTTP replay'}),fatal:()=>undefined,cancel:()=>{},demoStream:completionStream});
     const requests=result.trace.filter(item=>item.event==='request');
     assert.equal(attempts,4); assert.equal(requests.length,2);
     assert.equal(requests[0].retry_count,2);assert.deepEqual(requests[0].http_attempts.map(item=>item.status_code),[503,503,200]);
-    assert.equal(requests[1].retry_count,0);assert.equal(requests[1].usage.reasoning_tokens,null);assert.equal(requests[0].reasoning_content.length,5000);assert.equal(requests[0].reasoning_truncated,false);
-    assert.equal(requests[0].reasoning_source,'provider_reasoning_content');assert.equal(requests[0].usage.reasoning_tokens,10);assert.equal(requests[0].usage.output_tokens,30);
+    assert.ok(bodies.every(body=>body.thinking.type===(level?'disabled':'enabled')));
+    if (!level) assert.ok(bodies.every(body=>body.max_tokens>=8000 && body.max_tokens<=localModel.maxTokens));
+    const previous=bodies.at(-1).messages.find(message=>message.role==='assistant');
+    assert.equal(previous.tool_calls[0].function.name,'lookup');
+    assert.equal(previous.reasoning_content,level?'':'公开片段'.repeat(1250)+'第二段'.repeat(1250));
+    assert.equal(requests[1].retry_count,0);assert.equal(requests[1].usage.reasoning_tokens,null);assert.equal(requests[0].reasoning_content,level?null:previous.reasoning_content);assert.equal(requests[0].reasoning_truncated,false);
+    assert.equal(requests[1].reasoning_content,level?null:'本地回放：公开结果核对。');
+    assert.equal(requests[0].reasoning_source,level?null:'provider_reasoning_content');assert.equal(requests[0].usage.reasoning_tokens,10);assert.equal(requests[0].usage.output_tokens,30);
     assert.ok(requests[0].request_summary.tool_names.includes('lookup'));assert.ok(requests[0].request_summary.payload_bytes>0);
     const lookup=result.trace.find(item=>item.tool==='lookup');
     assert.equal(lookup.arguments.api_key,'[REDACTED]');assert.equal(lookup.arguments.code.truncated,true);assert.ok(lookup.response_bytes>0);assert.equal(lookup.parent_id,requests[0].id);
@@ -97,8 +105,9 @@ test('reasoning redacts a secret split across the cutoff and preserves valid Uni
   const entry={event:'request',status:'running'};
   const tap=createModelTap(entry,model,{messages:[]},{},true,[secret]);
   await tap.options.onProviderStreamEvent({choices:[{delta:{reasoning_content:'a'.repeat(7990)+secret.slice(0,10)}}]},model);
-  assert.ok(!entry.reasoning_content.includes(secret.slice(0,10)));
+  assert.ok(!entry.reasoning_content?.includes(secret.slice(0,10)));
   await tap.options.onProviderStreamEvent({choices:[{delta:{reasoning_content:secret.slice(10)+'尾部'}}]},model);
+  tap.finish();
   assert.ok(!entry.reasoning_content.includes(secret.slice(0,10)));
   const message={content:[{type:'thinking',thinking:'a'.repeat(7999)+'😀'}],usage:{input:1,output:1,reasoning:0,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{total:0}},stopReason:'stop'};
   const unicode={event:'request',status:'running'};

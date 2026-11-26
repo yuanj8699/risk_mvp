@@ -11,11 +11,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, create_engine, event
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DB = ROOT / "data" / "risk-testdata.db"
+# 内网归档有自己的业务日期及机构外键；切回 local 时继续使用原合成库。
+DEFAULT_DB = ROOT / "data" / ("risk-quickbi.db" if os.getenv("RISK_DATA_FETCHER", "").strip().lower() == "quickbi"
+                              else "risk-testdata.db")
 DEFAULT_DB.parent.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = os.getenv("RISK_DATABASE_URL", f"sqlite:///{DEFAULT_DB}")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}, pool_pre_ping=True)
@@ -23,7 +25,7 @@ if DATABASE_URL.startswith("sqlite"):
     @event.listens_for(engine, "connect")
     def sqlite_settings(connection, _):
         connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=5000")
+        connection.execute("PRAGMA busy_timeout=15000")
         # 指标流式读取与额度账本写入使用不同连接，WAL避免长读事务阻塞增量记账。
         connection.execute("PRAGMA journal_mode=WAL")
 
@@ -143,6 +145,13 @@ class AnalysisRun(Base):
     rule_snapshot: Mapped[list] = mapped_column(JSON, default=list)
     checks: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+def lock_analysis_run(db: Session, run_id: str) -> AnalysisRun | None:
+    """在独立短事务之初锁定任务，串行化扫描结果写回、补跑和历史删除。"""
+    if db.get_bind().dialect.name == "sqlite":
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    return db.get(AnalysisRun, run_id, with_for_update=True)
 
 
 class QueryBudgetGate(Base):

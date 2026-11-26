@@ -4,12 +4,26 @@ import { api, send } from './api';
 import type { TraceDiagnostics } from './trace-panel';
 
 export interface ConversationScope { runId: string; caseId?: string }
+export const smartqStatusLabel = {
+  ok: '已取得结果', empty: '未命中', error: '补查失败', unavailable: '补查不可用',
+} as const;
+
+interface SmartQSupplement {
+  status: keyof typeof smartqStatusLabel;
+  rewritten_question: string;
+  reason?: string;
+  record_count: number;
+  trailing_error?: boolean | string | null;
+  note?: string;
+}
+
 interface Turn extends TraceDiagnostics {
   id: string;
   question: string;
   answer: string;
   mode: string;
-  evidence: { id: string; label: string; text: string }[];
+  evidence: { id: string; label: string; text: string; source?: string }[];
+  smartq?: SmartQSupplement;
 }
 
 export function useConversation(scope: ComputedRef<ConversationScope | null>) {

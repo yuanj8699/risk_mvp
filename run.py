@@ -33,7 +33,10 @@ def main() -> None:
     except ImportError as exc:
         raise SystemExit("请先运行：python -m pip install -r requirements.txt") from exc
     print(f"行社风险提示测试版：http://{args.host}:{args.port}")
-    print("内置数据为合成数据。下发操作仅生成本地模拟回执。")
+    if os.getenv("RISK_DATA_FETCHER", "").strip().lower() == "quickbi":
+        print("风险扫描使用 QuickBI 当前身份取数。下发操作仅生成本地模拟回执。")
+    else:
+        print("内置数据为合成数据。下发操作仅生成本地模拟回执。")
     uvicorn.run("backend.app:app", host=args.host, port=args.port)
 
 

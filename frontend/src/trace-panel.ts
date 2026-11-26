@@ -1,5 +1,12 @@
 /** 共用运行轨迹：展示宿主已记录的调用与模型公开信息，不从旧记录推算缺失字段。 */
 import { computed, defineComponent, nextTick, ref, type PropType } from 'vue';
+import { Input } from 'tdesign-vue-next/es/input';
+import SearchIcon from 'tdesign-icons-vue-next/esm/components/search';
+import { smartqStatusLabel, type useConversation } from './conversation';
+import type { RiskScan } from './scan-types';
+import { buildTraceTimeline, normalizeTraceTitle, recordedNumber, traceNumber, traceDuration, type TimelineView } from './trace-timeline';
+export { buildTraceTimeline, traceNumber, traceDuration } from './trace-timeline';
+import './trace-panel.css';
 
 export interface TraceError { code?: string; message?: string }
 export interface AgentTrace {
@@ -23,10 +30,8 @@ export interface TraceRuntime {
   [key: string]: unknown;
 }
 export interface TraceDiagnostics { trace?: AgentTrace[]; runtime?: TraceRuntime; truncated?: boolean }
-interface TraceRow { entry: AgentTrace; key: string; depth: number; index: number; parent?: TraceRow }
-interface TraceGroup { key: string; request?: TraceRow; rows: TraceRow[] }
-type TimelineView = 'duration' | 'rounds' | 'calls';
-interface TimelinePosition { left: number; width: number; point: boolean }
+export interface TraceRow { entry: AgentTrace; key: string; depth: number; index: number; parent?: TraceRow }
+export interface TraceGroup { key: string; request?: TraceRow; rows: TraceRow[] }
 
 /** 完成事件可能晚于子调用入列；通过真实parent_id恢复父子顺序，旧记录保持原始顺序。 */
 export function orderTrace(trace: AgentTrace[]): TraceRow[] {
@@ -79,170 +84,231 @@ export function groupTrace(rows: TraceRow[]): TraceGroup[] {
 
 export function matchesTraceSearch(entry: AgentTrace, query: string): boolean {
   const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
-  const haystack = JSON.stringify([entry.tool, entry.arguments, entry.error, entry.evidence_ids,
-    entry.model_id, entry.case_key, entry.execution_id, entry.phase]).toLocaleLowerCase();
+  if (!terms.length) return true;
+  const haystack = JSON.stringify(entry).toLocaleLowerCase();
   return terms.every(term => haystack.includes(term));
 }
 
-/** 三种坐标分别表达真实时间、已记录轮次和调用次序；缺失时间不生成虚假时段。 */
-export function buildTraceTimeline(rows: TraceRow[], groups: TraceGroup[], view: TimelineView) {
-  const positions = new Map<string, TimelinePosition>();
-  let ticks: { left: number; label: string }[] = [];
-  let note = '';
-  if (!rows.length) return { positions, ticks, note: '未记录轨迹。' };
-  if (view === 'duration') {
-    const timed = rows.map(row => ({ row, start: Date.parse(row.entry.started_at ?? '') })).filter(item => Number.isFinite(item.start));
-    if (!timed.length) return { positions, ticks, note: '开始时间未记录，无法按时长定位。可切换轮次或调用视图。' };
-    const origin = Math.min(...timed.map(item => item.start));
-    const end = Math.max(...timed.map(item => item.start + (recordedNumber(item.row.entry.duration_ms) ? Math.max(0, item.row.entry.duration_ms) : 0)));
-    const span = end - origin;
-    for (const { row, start } of timed) positions.set(row.key, {
-      left: (start - origin) / (span || 1) * 100,
-      width: recordedNumber(row.entry.duration_ms) ? Math.max(0, row.entry.duration_ms) / (span || 1) * 100 : 0,
-      point: !recordedNumber(row.entry.duration_ms) || row.entry.duration_ms === 0,
-    });
-    ticks = span ? [0, .25, .5, .75, 1].map(part => ({ left: part * 100, label: traceDuration(span * part) })) : [{ left: 0, label: '已记录起点' }];
-    const missing = rows.filter(row => !Number.isFinite(Date.parse(row.entry.started_at ?? '')) || !recordedNumber(row.entry.duration_ms)).length;
-    note = missing ? `${missing} 项时间信息不完整；缺少时长的记录仅显示起点。` : '按已记录开始时间与耗时绘制。';
-  } else if (view === 'rounds') {
-    groups.forEach((group, groupIndex) => {
-      group.rows.forEach((row, index) => positions.set(row.key, {
-        left: (groupIndex + .08 + index / group.rows.length * .84) / groups.length * 100,
-        width: .65 / group.rows.length / groups.length * 100, point: false,
-      }));
-      ticks.push({ left: (groupIndex + .5) / groups.length * 100,
-        label: group.request?.entry.request === undefined ? '未记录轮次' : `第 ${group.request.entry.request} 轮` });
-    });
-    note = '按轮次等距排列，不代表耗时。';
-  } else {
-    rows.forEach((row, index) => positions.set(row.key, { left: (index + .08) / rows.length * 100, width: .75 / rows.length * 100, point: false }));
-    const indexes = [...new Set([0, Math.floor((rows.length - 1) / 2), rows.length - 1])];
-    ticks = indexes.map(index => ({ left: (index + .5) / rows.length * 100, label: `第 ${index + 1} 项` }));
-    note = '按调用顺序排列，不代表耗时。';
-  }
-  if (ticks.length > 7) ticks = ticks.filter((_, index) => index % Math.ceil(ticks.length / 6) === 0 || index === ticks.length - 1);
-  return { positions, ticks, note };
-}
-
-const recordedNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
-export const traceNumber = (value: unknown) => recordedNumber(value) ? value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '未记录';
-export const traceDuration = (value: unknown) => recordedNumber(value) ? value < 1000 ? `${traceNumber(value)} ms` : `${traceNumber(value / 1000)} s` : '未记录';
 export const traceBytes = (value: unknown) => recordedNumber(value) ? value < 1024 ? `${traceNumber(value)} B` : `${traceNumber(value / 1024)} KiB` : '未记录';
 
+type Turn = ReturnType<typeof useConversation>['turns']['value'][number];
+type ArchiveEntry = AgentTrace & { caption?: string; summary?: string };
+interface LogGroup { title: string; rows: TraceRow[] }
+
+const phaseNames: Record<string, string> = {
+  draft_risk_letter: '06 风险报告撰写',
+  select: '指标选择', explain: '事件分析', explore: '自主分析', follow_up: '任务追问',
+  synthesize_risks: '05 行社归并', dimensions: '01 内置风险面', mapping: '02 指标口径匹配',
+  fetch: '03 指标取数', validation: '04 源表口径校验',
+};
+const roleNames: Record<string, string> = {
+  context: '上下文', user: '用户', request: '助手', assistant: '助手', tool: '工具', smartq: '工具',
+};
+const failed = (entry: AgentTrace) => ['error', 'cancelled', 'failed'].includes(entry.status ?? '') ||
+  Boolean(entry.error) || (recordedNumber(entry.exit_code) && entry.exit_code !== 0);
+const fromSmartQ = (entry: AgentTrace) => entry.event === 'smartq' || /smartq/i.test(entry.tool ?? '') ||
+  Boolean(entry.evidence_ids?.some(id => id.startsWith('smartq:')));
+const compact = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value);
+const format = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+const statusLabels: Record<string, string> = {
+  ok: '成功', error: '失败', failed: '失败', cancelled: '已取消', running: '进行中',
+};
+const role = (entry: AgentTrace) => roleNames[entry.event] || entry.event;
+const heading = (entry: ArchiveEntry) => entry.caption || entry.tool || entry.model_id || role(entry);
+function outcome(entry: ArchiveEntry) {
+  if (entry.summary) return entry.summary;
+  if (entry.error) return [entry.error.code, entry.error.message].filter(Boolean).join(' · ') || '失败';
+  const parts = [statusLabels[entry.status ?? ''] || entry.status];
+  if (entry.evidence_ids?.length) parts.push('引用 ' + entry.evidence_ids.length + ' 条证据');
+  if (entry.usage?.total_tokens != null) parts.push(traceNumber(entry.usage.total_tokens) + ' tokens');
+  if (recordedNumber(entry.response_bytes)) parts.push(traceBytes(entry.response_bytes));
+  return parts.filter(Boolean).join(' · ') || '返回未记录';
+}
+function argumentSummary(entry: ArchiveEntry) {
+  if (entry.caption) return '';
+  const args = entry.arguments ?? entry.request_summary;
+  return args === undefined ? '' : compact(args)?.replace(/\s+/g, ' ').slice(0, 110);
+}
+
+// 阶段 1–4 只有业务归档。展示已存快照与校验事实，不将其标成工具调用或推算耗时。
+function archiveRow(id: string, event: string, phase: string, caption: string, summary: string, data?: unknown, status?: string): TraceRow {
+  const entry: ArchiveEntry = { event, phase, caption, summary, arguments: data, status };
+  return { key: 'archive:' + id, index: -1, depth: 0, entry };
+}
+function withArchive(trace: TraceRow[], scan?: RiskScan | null, turn?: Turn) {
+  if (turn) {
+    const rows = [archiveRow('question', 'user', 'follow_up', turn.question, '', turn.question), ...trace];
+    const supplement = turn.smartq;
+    if (supplement?.rewritten_question) {
+      const row = archiveRow('lookup', 'smartq', 'follow_up', '小 Q 实时补查',
+        smartqStatusLabel[supplement.status] + ' · ' + supplement.record_count + ' 条 · 口径仅供参考',
+        supplement, supplement.status);
+      const start = rows.findIndex(row => row.entry.id?.startsWith('supplement:'));
+      rows.splice(start < 0 ? rows.length : start, 0, row);
+    }
+    if (turn.answer) rows.push(archiveRow('answer', 'assistant', 'follow_up', turn.answer,
+      '引用 ' + turn.evidence.length + ' 条证据', { answer: turn.answer, evidence: turn.evidence }));
+    return rows;
+  }
+  if (!scan) return trace;
+  const rows: TraceRow[] = [];
+  if (scan.selection) rows.push(archiveRow('scope', 'context', 'dimensions', '扫描范围',
+    '已选 ' + scan.selection.dimension_ids.length + ' 个风险面 · ' + scan.selection.task_context.as_of,
+    { dimension_ids: scan.selection.dimension_ids, task_context: scan.selection.task_context }));
+  const validation = scan.validation_summary;
+  if (scan.knowledge_mapping) {
+    const metrics = Object.keys(scan.knowledge_mapping);
+    const missing = new Set(validation?.missing_source ?? []);
+    const matched = validation ? ' · 已匹配 ' + metrics.filter(id => !missing.has(id)).length + ' 项' : '';
+    rows.push(archiveRow('mapping', 'context', 'mapping', '归档指标口径',
+      metrics.length + ' 项定义' + matched, scan.knowledge_mapping));
+  }
+  if (validation) {
+    rows.push(archiveRow('fetch', 'context', 'fetch', '归档取数结果',
+      validation.covered_org_count + ' 家有观测 · ' + validation.available_indicator_count + ' 项可用指标',
+      { visibility: validation.visibility, covered_org_count: validation.covered_org_count, available_indicator_count: validation.available_indicator_count }));
+    rows.push(archiveRow('validation', 'context', 'validation', '源表口径校验归档',
+      '缺数 ' + validation.missing_count + ' 项 · 单位拦截 ' + validation.unit_mismatch_count + ' 项', validation));
+  }
+  rows.push(...trace);
+  if (scan.executive_summary) rows.push(archiveRow('synthesis', 'assistant', 'synthesize_risks', '归并综述', scan.executive_summary, scan.executive_summary));
+  for (const draft of Object.values(scan.letter_drafts ?? {})) {
+    rows.push(...orderTrace((draft.trace ?? []).map(entry => ({ ...entry, phase: 'draft_risk_letter', case_key: draft.org_name }))));
+  }
+  return rows;
+}
+
 export default defineComponent({
+  components: { TInput: Input, SearchIcon },
   props: {
     trace: { type: Array as PropType<AgentTrace[]>, default: () => [] },
     runtime: { type: Object as PropType<TraceRuntime>, default: undefined },
-    mode: { type: String, default: '' }, title: { type: String, default: '运行轨迹' },
+    scan: { type: Object as PropType<RiskScan | null>, default: undefined },
+    turn: { type: Object as PropType<Turn>, default: undefined },
+    round: { type: Number, default: 0 },
+    mode: { type: String, default: '' }, title: { type: String, default: '执行轨迹' },
     error: { type: String, default: '' }, truncated: { type: Boolean, default: false },
   },
   setup(props) {
-    const filter = ref('all');
-    const search = ref('');
-    const view = ref<TimelineView>('duration');
-    const selectedKey = ref('');
-    const entryElements = new Map<string, HTMLDetailsElement>();
-    const filters = [{ id: 'all', label: '全部' }, { id: 'tool', label: '工具' }, { id: 'request', label: '模型' }, { id: 'failed', label: '失败' }];
-    const views = [{ id: 'duration', label: '时长' }, { id: 'rounds', label: '轮次' }, { id: 'calls', label: '调用' }];
-    const lanes = [{ id: 'input', label: '请求' }, { id: 'request', label: '模型' }, { id: 'tool', label: '工具' }];
-    const failed = (entry: AgentTrace) => entry.status === 'error' || entry.status === 'cancelled' || Boolean(entry.error) || (recordedNumber(entry.exit_code) && entry.exit_code !== 0);
-    const rows = computed(() => orderTrace(props.trace));
-    const groups = computed(() => groupTrace(rows.value));
-    const rowNumbers = computed(() => new Map(rows.value.map((row, index) => [row.key, index + 1])));
-    const rowGroups = computed(() => new Map(groups.value.flatMap(group => group.rows.map(row => [row.key, group] as const))));
-    const visibleRows = computed(() => rows.value.filter(row => (filter.value === 'all' || (filter.value === 'failed' ? failed(row.entry) : row.entry.event === filter.value)) && matchesTraceSearch(row.entry, search.value)));
-    const visibleGroups = computed(() => {
-      const visible = new Set(visibleRows.value.map(row => row.key));
-      return groups.value.map(group => ({ ...group, rows: group.rows.filter(row => visible.has(row.key)) })).filter(group => group.rows.length);
-    });
-    const timeline = computed(() => buildTraceTimeline(rows.value, groups.value, view.value));
-    const marks = (lane: string) => visibleRows.value.filter(row => timeline.value.positions.has(row.key) && row.entry.event === (lane === 'input' ? 'request' : lane));
-    const markerStyle = (row: TraceRow, lane: string) => {
-      const point = timeline.value.positions.get(row.key)!;
-      return { left: `${point.left}%`, width: lane === 'input' ? '4px' : `${point.width}%`,
-        transform: point.left >= 99.9 ? 'translateX(-100%)' : undefined,
-        top: lane === 'tool' && row.depth > 0 ? '10px' : '4px' };
-    };
+    const filter = ref('all'), search = ref(''), view = ref<TimelineView>('duration');
+    const foldIdleGaps = ref(true);
+    const selected = ref(''), expanded = ref('');
+    const list = ref<HTMLElement | null>(null);
+    const filters = [
+      { id: 'all', label: '全部' }, { id: 'tool', label: '工具' }, { id: 'request', label: '模型' },
+      { id: 'smartq', label: '仅看小Q' }, { id: 'failed', label: '失败' },
+    ];
+    const views = [{ id: 'duration', label: '时长' }, { id: 'rounds', label: '轮次' }, { id: 'calls', label: '调用' }] as const;
+    const lanes = [{ id: 'input', label: '输入' }, { id: 'request', label: '模型' }, { id: 'tool', label: '工具' }];
     const demo = computed(() => props.mode === 'pi-demo' || props.runtime?.mode === 'demo');
-    const count = (event: string) => props.trace.filter(entry => entry.event === event).length;
-    const entryTitle = (entry: AgentTrace) => entry.event === 'request' ? entry.model_id || props.runtime?.model || '模型请求' : entry.tool || '工具调用';
-    const status = (entry: AgentTrace) => ({ ok: '成功', error: '失败', cancelled: '已取消', running: '进行中' }[entry.status ?? ''] ?? (failed(entry) ? '失败' : '状态未记录'));
-    const startTime = (value?: string) => {
-      if (!value) return '未记录';
-      const date = new Date(value);
-      return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
-    };
-    const formatted = (value: unknown) => value === undefined ? '未记录' : typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-    const errorText = (value?: TraceError) => value ? [value.code, value.message].filter(Boolean).join(' · ') || '错误详情未记录' : '未记录';
-    const retryText = (entry: AgentTrace) => entry.retry_observation === 'not_applicable' ? '不适用（离线演示）' : traceNumber(entry.retry_count);
-    const recoveryStatus = (value?: string) => ({ retry_available: '仍可修正后重试', exhausted: '已达到尝试上限', recovered: '恢复成功' }[value ?? ''] ?? '恢复状态未记录');
-    const phaseLabel = (value?: string) => ({ select: '指标选择', explain: '事件分析', explore: '自主分析', follow_up: '任务追问' }[value ?? ''] ?? value);
-    const roundTitle = (group: TraceGroup) => group.request?.entry.request === undefined ? '轮次未记录' : `第 ${group.request.entry.request} 轮`;
-    const markerLabel = (row: TraceRow) => `${roundTitle(rowGroups.value.get(row.key)!)}，日志第 ${rowNumbers.value.get(row.key)} 项，${entryTitle(row.entry)}，耗时 ${traceDuration(row.entry.duration_ms)}`;
-    const rowSummary = (entry: AgentTrace) => {
-      if (entry.event === 'request') {
-        const reasoning = entry.reasoning_content?.replace(/\s+/g, ' ').trim();
-        return reasoning ? reasoning.slice(0, 150) + (reasoning.length > 150 ? '…' : '') : `消息 ${traceNumber(entry.request_summary?.message_count)} · tokens ${traceNumber(entry.usage?.total_tokens)}`;
+    const rows = computed(() => withArchive(orderTrace(props.trace), props.scan, props.turn));
+    const visible = computed(() => rows.value.filter(({ entry }) => {
+      const include = filter.value === 'all' || (filter.value === 'failed' && failed(entry)) ||
+        (filter.value === 'smartq' && fromSmartQ(entry)) ||
+        (filter.value === 'tool' && role(entry) === '工具') || (filter.value === 'request' && entry.event === 'request');
+      return include && matchesTraceSearch(entry, search.value);
+    }));
+    const groups = computed(() => {
+      const result: LogGroup[] = [];
+      for (const row of visible.value) {
+        const { phase, case_key } = row.entry;
+        const stage = normalizeTraceTitle(phaseNames[phase ?? ''] || phase || props.title);
+        const title = props.turn ? (props.round ? '第 ' + props.round + ' 轮追问' : '本轮追问') :
+          stage + (case_key && !stage.endsWith(' · ' + case_key) ? ' · ' + case_key : '');
+        const last = result[result.length - 1];
+        if (last?.title === title) last.rows.push(row);
+        else result.push({ title, rows: [row] });
       }
-      if (entry.arguments === undefined) return '参数未记录';
-      const text = JSON.stringify(entry.arguments).replace(/\s+/g, ' ');
-      return text.length > 150 ? text.slice(0, 150) + '…' : text;
+      return result;
+    });
+    const timeline = computed(() => buildTraceTimeline(rows.value, groupTrace(rows.value), view.value, foldIdleGaps.value));
+    const marks = (lane: string) => visible.value.filter(({ key, entry }) => {
+      if (!timeline.value.positions.has(key)) return false;
+      if (lane === 'input') return ['context', 'user', 'request'].includes(entry.event);
+      if (lane === 'request') return role(entry) === '助手';
+      return role(entry) === '工具';
+    });
+    const markStyle = (row: TraceRow, lane: string) => {
+      const position = timeline.value.positions.get(row.key)!;
+      return { left: position.left + '%', width: lane === 'request' && !position.point ? position.width + '%' : undefined,
+        transform: position.left > 99.8 ? 'translateX(-100%)' : undefined };
     };
-    const registerRow = (key: string, element: unknown) => {
-      if (element instanceof HTMLDetailsElement) entryElements.set(key, element);
-      else entryElements.delete(key);
+    const markerLabel = (row: TraceRow) => heading(row.entry) + (row.entry.duration_ms == null ? ' · 耗时未记录' : ' · ' + traceDuration(row.entry.duration_ms));
+    const open = (key: string) => {
+      selected.value = key;
+      expanded.value = expanded.value === key ? '' : key;
     };
     const locate = async (row: TraceRow) => {
-      selectedKey.value = row.key;
+      expanded.value = selected.value = row.key;
       await nextTick();
-      const element = entryElements.get(row.key);
-      if (!element) return;
-      element.open = true;
-      element.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-      element.querySelector('summary')?.focus({ preventScroll: true });
+      const button = list.value?.querySelector<HTMLButtonElement>('[data-event-key="' + CSS.escape(row.key) + '"]');
+      button?.scrollIntoView({ block: 'nearest' });
+      button?.focus({ preventScroll: true });
     };
-    return { filter, filters, search, view, views, lanes, rows, visibleRows, visibleGroups, timeline, marks, markerStyle, markerLabel, selectedKey, registerRow, locate,
-      demo, failed, count, entryTitle, rowSummary, roundTitle, status, startTime, formatted, errorText, retryText, recoveryStatus, phaseLabel, traceNumber, traceDuration, traceBytes };
+    return { filter, search, view, foldIdleGaps, filters, views, lanes, list, selected, expanded, demo, rows, visible, groups,
+      timeline, marks, markStyle, markerLabel, open, locate, role, heading, outcome, argumentSummary, failed, format, traceDuration, traceNumber };
   },
   template: `
-    <section class="trace-panel" :aria-label="title">
-      <p v-if="error" class="trace-failure" role="status">{{ error }}</p>
-      <p v-if="truncated || runtime?.trace_truncated===true" class="trace-note">轨迹记录达到保存上限，以下仅为已保存部分。</p>
-      <template v-if="trace.length">
-        <div class="trace-toolbar"><div class="trace-views" role="group" aria-label="轨迹坐标视图"><button v-for="item in views" :key="item.id" type="button" :class="{active:view===item.id}" :aria-pressed="view===item.id" @click="view=item.id">{{ item.label }}<span>{{ item.id==='duration' ? traceDuration(runtime?.duration_ms) : item.id==='rounds' ? count('request') : count('tool') }}</span></button></div><label class="trace-search"><span>搜索</span><input v-model="search" type="search" placeholder="工具、参数、错误、证据" aria-label="搜索运行轨迹" /></label></div>
-        <div class="trace-timeline" aria-label="请求开始、模型与工具时间泳道" :title="timeline.note">
-          <div v-for="lane in lanes" :key="lane.id" class="trace-lane"><span class="trace-lane-label"><i :class="lane.id"></i>{{ lane.label }}</span><div class="trace-lane-track"><button v-for="row in marks(lane.id)" :key="row.key" type="button" :class="['trace-lane-mark',lane.id,{'failed':lane.id!=='input' && failed(row.entry),'point':lane.id==='input' || timeline.positions.get(row.key)?.point}]" :style="markerStyle(row,lane.id)" :title="markerLabel(row)" :aria-label="'定位'+markerLabel(row)" @click="locate(row)"></button></div></div>
-          <div class="trace-axis"><span v-for="(tick,index) in timeline.ticks" :key="index" :style="{left:tick.left+'%'}">{{ tick.label }}</span></div>
+    <section class="trace-workspace" :aria-label="title">
+      <div class="trace-commandbar">
+        <div class="trace-modes" role="group" aria-label="时间轴视图">
+          <button type="button" v-for="item in views" :key="item.id" :aria-pressed="view===item.id" @click="view=item.id">{{ item.label }}</button>
         </div>
-        <p v-if="view!=='duration' || timeline.note.includes('未记录') || timeline.note.includes('不完整')" class="trace-timeline-note">{{ timeline.note }}</p>
-        <div class="trace-controls"><div class="trace-filters" role="group" aria-label="筛选轨迹"><button v-for="item in filters" :key="item.id" type="button" :class="{active:filter===item.id}" :aria-pressed="filter===item.id" @click="filter=item.id">{{ item.label }}</button></div><span>显示 {{ visibleRows.length }} / {{ trace.length }} 项</span></div>
-        <div v-if="visibleGroups.length" class="trace-rounds">
-          <section v-for="group in visibleGroups" :key="group.key" class="trace-round">
-            <header class="trace-round-heading"><strong>{{ roundTitle(group) }}</strong><span v-if="group.rows[0].entry.case_key">行社 {{ group.rows[0].entry.case_key }}</span><span v-if="group.rows[0].entry.phase">{{ phaseLabel(group.rows[0].entry.phase) }}</span><small>{{ group.rows.length }} 项</small></header>
-            <ol class="trace-list">
-              <li v-for="row in group.rows" :key="row.key" :class="['trace-item', {'trace-child':row.depth>0, 'trace-item-failed':failed(row.entry), 'trace-item-selected':selectedKey===row.key}]">
-                <details :ref="element=>registerRow(row.key,element)">
-                  <summary class="trace-entry-summary"><span :class="['trace-kind',failed(row.entry)?'failed':row.entry.event]">{{ failed(row.entry)?'失败':row.entry.event==='request'?'模型':'工具' }}</span><span class="trace-entry-main"><span v-if="row.depth>0" class="trace-nested" aria-hidden="true">↳</span><strong>{{ entryTitle(row.entry) }}</strong><span v-if="row.entry.recovery_attempt!==undefined" class="trace-recovery-count" :title="'工具恢复尝试 '+row.entry.recovery_attempt+'/'+row.entry.recovery_limit">{{ row.entry.recovery_attempt }}/{{ row.entry.recovery_limit }}</span><code>{{ rowSummary(row.entry) }}</code></span><span class="trace-entry-time">{{ traceDuration(row.entry.duration_ms) }}</span><span class="trace-row-bytes" :title="row.entry.event==='tool'?'工具返回体积':'请求体积'">{{ row.entry.event==='tool' ? traceBytes(row.entry.response_bytes) : '请求 '+traceBytes(row.entry.request_summary?.payload_bytes) }}</span></summary>
-              <div class="trace-entry-body">
-                <dl class="trace-metadata"><div><dt>调用状态</dt><dd>{{ status(row.entry) }}</dd></div><div><dt>开始时间</dt><dd>{{ startTime(row.entry.started_at) }}</dd></div><div><dt>耗时</dt><dd>{{ traceDuration(row.entry.duration_ms) }}</dd></div><div v-if="row.entry.event==='tool'"><dt>工具返回体积</dt><dd>{{ traceBytes(row.entry.response_bytes) }}</dd></div><div v-if="row.entry.execution_id"><dt>执行记录</dt><dd><code>{{ row.entry.execution_id }}</code></dd></div><div v-if="row.entry.phase"><dt>阶段</dt><dd>{{ phaseLabel(row.entry.phase) }}</dd></div><div v-if="row.parent"><dt>上层调用</dt><dd>{{ entryTitle(row.parent.entry) }}</dd></div></dl>
-                <section v-if="row.entry.recovery_attempt!==undefined || row.entry.recovery_status" class="trace-recovery"><h4>工具失败恢复</h4><p>第 {{ traceNumber(row.entry.recovery_attempt) }} 次尝试 / 上限 {{ traceNumber(row.entry.recovery_limit) }} 次 · {{ recoveryStatus(row.entry.recovery_status) }}</p><small>工具恢复尝试与 HTTP 网络重试分别记录。</small></section>
-                <template v-if="row.entry.event==='request'">
-                  <dl class="trace-metadata"><div><dt>模型服务</dt><dd>{{ row.entry.model_provider || runtime?.provider || '未记录' }}</dd></div><div><dt>输入 tokens</dt><dd>{{ traceNumber(row.entry.usage?.input_tokens) }}</dd></div><div><dt>输出 tokens</dt><dd>{{ traceNumber(row.entry.usage?.output_tokens) }}</dd></div><div><dt>推理 tokens</dt><dd>{{ traceNumber(row.entry.usage?.reasoning_tokens) }}</dd></div><div><dt>总 tokens</dt><dd>{{ traceNumber(row.entry.usage?.total_tokens) }}</dd></div><div><dt>缓存读取 / 写入</dt><dd>{{ traceNumber(row.entry.usage?.cache_read_tokens) }} / {{ traceNumber(row.entry.usage?.cache_write_tokens) }}</dd></div><div><dt>HTTP 真实重试次数</dt><dd>{{ retryText(row.entry) }}</dd></div></dl>
-                  <details class="trace-detail"><summary>请求摘要</summary><dl class="trace-metadata"><div><dt>消息条数</dt><dd>{{ traceNumber(row.entry.request_summary?.message_count) }}</dd></div><div><dt>请求体积</dt><dd>{{ traceBytes(row.entry.request_summary?.payload_bytes) }}</dd></div></dl><p>可用工具：{{ row.entry.request_summary?.tool_names?.join('、') || '未记录' }}</p></details>
-                  <details class="trace-detail"><summary>公开推理内容</summary><p class="trace-note">仅展示提供方返回的公开 reasoning / thinking 内容。</p><pre v-if="row.entry.reasoning_content">{{ row.entry.reasoning_content }}</pre><p v-else>{{ demo ? '离线演示未调用真实模型，未提供公开推理。' : '提供方未提供公开推理内容。' }}</p><p v-if="row.entry.reasoning_truncated" class="trace-note">公开推理内容达到记录上限，已截断。</p></details>
-                  <details class="trace-detail"><summary>HTTP 请求尝试与重试</summary><p v-if="!row.entry.http_attempts?.length">{{ row.entry.retry_observation==='not_applicable' ? '离线演示不产生真实网络请求。' : '未记录网络请求尝试；模型调用轮次不等于重试次数。' }}</p><ol v-else class="trace-attempts"><li v-for="attempt in row.entry.http_attempts" :key="attempt.attempt"><strong>尝试 {{ attempt.attempt }}</strong><span>{{ startTime(attempt.started_at) }} · {{ traceDuration(attempt.duration_ms) }} · HTTP {{ traceNumber(attempt.status_code) }}</span><p v-if="attempt.error" class="trace-failure">{{ errorText(attempt.error) }}</p></li></ol></details>
+        <button v-if="view==='duration' && timeline.gapCount" type="button" class="trace-fold"
+          :aria-pressed="foldIdleGaps" :title="foldIdleGaps ? '切换到真实跨度' : '折叠超过 15 秒的空闲'"
+          @click="foldIdleGaps=!foldIdleGaps">{{ foldIdleGaps ? '折叠空闲' : '真实跨度' }}</button>
+        <select v-model="filter" aria-label="筛选轨迹"><option v-for="item in filters" :key="item.id" :value="item.id">{{ item.label }}</option></select>
+        <slot name="source"></slot>
+        <div class="trace-search"><t-input size="small" v-model="search" aria-label="搜索轨迹" placeholder="搜索轨迹" clearable><template #prefix-icon><search-icon /></template></t-input></div>
+      </div>
+      <p v-if="error" class="trace-notice trace-warning" role="alert">{{ error }}</p>
+      <p v-if="truncated || runtime?.trace_truncated" class="trace-notice trace-warning">轨迹达到归档上限，仅显示已保存事件。</p>
+      <template v-if="rows.length">
+        <div class="trace-map" aria-label="三轨时间轴">
+          <div v-for="lane in lanes" :key="lane.id" class="trace-map-row">
+            <span>{{ lane.label }}</span>
+            <div class="trace-map-track">
+              <span v-for="gap in timeline.gaps" :key="gap.left" class="trace-gap" :title="gap.label"
+                :aria-label="gap.label" :style="{ left:gap.left+'%', width:gap.width+'%' }"></span>
+              <button v-for="row in marks(lane.id)" :key="row.key" type="button"
+              :class="['trace-mark', lane.id, { selected:selected===row.key }]" :style="markStyle(row,lane.id)"
+              :title="markerLabel(row)" :aria-label="'定位'+markerLabel(row)" @click="locate(row)"></button></div>
+          </div>
+          <div class="trace-map-meta">
+            <span v-if="demo">Pi 本地演示</span><span>{{ timeline.note }}</span>
+            <span class="trace-count">{{ visible.length }} / {{ rows.length }} 项</span>
+          </div>
+        </div>
+        <div ref="list" class="trace-events">
+          <section v-for="group in groups" :key="group.rows[0].key" class="trace-phase">
+            <h3>{{ group.title }}</h3>
+            <div v-for="row in group.rows" :key="row.key" class="trace-event" :class="{chosen:selected===row.key}">
+              <button type="button" class="trace-line" :data-event-key="row.key" :aria-expanded="expanded===row.key" @click="open(row.key)">
+                <span class="trace-role" :class="'role-'+row.entry.event">{{ role(row.entry) }}</span>
+                <span class="trace-description"><strong>{{ heading(row.entry) }}</strong>
+                <span v-if="row.entry.event==='request' && row.entry.reasoning_content" class="trace-thought"><b>思考{{ row.entry.usage?.reasoning_tokens!=null ? ' · '+row.entry.usage.reasoning_tokens+' tokens' : '' }}</b> {{ row.entry.reasoning_content.trim().slice(0,120) }}</span>
+                <code v-if="argumentSummary(row.entry)"> {{ argumentSummary(row.entry) }}</code>
+                <span v-if="!row.entry.caption || row.entry.summary" :class="{ 'trace-warning':failed(row.entry) }"> → {{ outcome(row.entry) }}</span></span>
+                <small v-if="row.entry.duration_ms!=null">{{ traceDuration(row.entry.duration_ms) }}</small>
+              </button>
+              <div v-if="expanded===row.key" class="trace-inspector">
+                <template v-if="row.entry.caption"><h4>归档内容</h4><pre>{{ format(row.entry.arguments) }}</pre></template>
+                <template v-else>
+                  <dl><div><dt>开始时间</dt><dd>{{ row.entry.started_at || '未记录' }}</dd></div><div><dt>耗时</dt><dd>{{ traceDuration(row.entry.duration_ms) }}</dd></div><div v-if="row.entry.event==='request'"><dt>Token 用量</dt><dd>{{ traceNumber(row.entry.usage?.total_tokens) }}</dd></div></dl>
+                  <template v-if="row.entry.arguments!==undefined"><h4>调用参数</h4><pre>{{ format(row.entry.arguments) }}</pre></template>
+                  <template v-if="row.entry.request_summary"><h4>请求摘要</h4><pre>{{ format(row.entry.request_summary) }}</pre></template>
+                  <template v-if="row.entry.event==='request'"><h4>思考链（公开推理）</h4><pre class="trace-reasoning">{{ row.entry.reasoning_content || (demo ? '演示模式未调用真实模型。' : '提供方未记录公开推理。') }}</pre><small v-if="row.entry.reasoning_truncated">已达到记录上限</small></template>
+                  <template v-if="row.entry.evidence_ids?.length"><h4>证据引用</h4><pre>{{ format(row.entry.evidence_ids) }}</pre></template>
+                  <template v-if="row.entry.usage"><h4>Token 明细</h4><pre>{{ format(row.entry.usage) }}</pre></template>
+                  <template v-if="row.entry.error"><h4>错误详情</h4><pre>{{ format(row.entry.error) }}</pre></template>
+                  <details class="trace-raw"><summary>完整事件 JSON</summary><pre>{{ format(row.entry) }}</pre></details>
                 </template>
-                <template v-else><details class="trace-detail"><summary>调用参数</summary><pre>{{ formatted(row.entry.arguments) }}</pre></details><details class="trace-detail"><summary>证据引用{{ row.entry.evidence_ids ? ' · '+row.entry.evidence_ids.length+' 条' : '' }}</summary><ul v-if="row.entry.evidence_ids?.length" class="trace-evidence"><li v-for="id in row.entry.evidence_ids" :key="id"><code>{{ id }}</code></li></ul><p v-else>{{ row.entry.evidence_ids ? '本次未记录证据引用。' : '未记录' }}</p></details></template>
-                <details v-if="failed(row.entry)" class="trace-detail" open><summary>失败原因</summary><pre>{{ errorText(row.entry.error) }}</pre><p v-if="row.entry.exit_code!==undefined">退出码：{{ row.entry.exit_code }}</p></details>
-                  </div>
-                </details>
-              </li>
-            </ol>
+              </div>
+            </div>
           </section>
+          <p v-if="!groups.length" class="trace-notice">没有匹配的事件。调整筛选条件或搜索词后可继续查看。</p>
         </div>
-        <p v-else class="trace-empty">没有匹配记录。可调整搜索词或筛选条件。</p>
       </template>
-      <p v-else class="trace-empty">本任务尚无轨迹记录。</p>
-    </section>
-  `,
+      <p v-else class="trace-notice">当前来源没有已保存的轨迹。</p>
+    </section>`,
 });

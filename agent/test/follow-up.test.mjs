@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { runRequest, toolStream } from "../dist/runtime.js";
 
 const task = {
@@ -12,6 +13,31 @@ const task = {
   ],
 };
 const offline = { env: {} };
+
+test("全辖归档超过千条时可翻到千条之后，未查询的完整归档不进入模型上下文", async () => {
+  const evidence = Array.from({ length: 1205 }, (_, i) => ({ id: `row-${i}`, label: `行社记录${i}`, text: `记录值 ${i}` }));
+  const streamFn = (model, conversation) => {
+    const read = conversation.messages.find(m => m.role === "toolResult" && m.toolName === "read_task_evidence");
+    if (!read) {
+      assert.doesNotMatch(JSON.stringify(conversation.messages), /行社记录1101/);
+      return toolStream(model, "read_task_evidence", { keywords: [], offset: 1100 });
+    }
+    const page = JSON.parse(read.content[0].text);
+    return toolStream(model, "submit_follow_up", { answer: page.rows[1].text, evidence_ids: [page.rows[1].id] });
+  };
+  const result = await runRequest({ ...task, evidence }, { ...offline, streamFn });
+  assert.deepEqual(result.evidence_ids, ["row-1101"]);
+  assert.match(result.answer, /1101/);
+});
+
+test("CLI 接受超过原五兆限制的完整归档", () => {
+  const evidence = Array.from({ length: 5300 }, (_, i) => ({ id: `row-${i}`, label: "记录", text: "x".repeat(1100) }));
+  const input = JSON.stringify({ ...task, question: "不存在的内容", evidence });
+  assert.ok(Buffer.byteLength(input) > 5 * 1024 * 1024);
+  const child = spawnSync(process.execPath, ["dist/runner.js"], { input, encoding: "utf8", timeout: 30000 });
+  assert.equal(child.status, 0, child.stdout || child.stderr);
+  assert.match(JSON.parse(child.stdout).answer, /证据不足/);
+});
 
 test("追问沿用上一轮指标并引用实际读取的任务证据", async () => {
   const result = await runRequest(task, offline);

@@ -1,0 +1,81 @@
+/* 内置风险面保持单列阅读顺序，窄屏把接入状态移至说明下方。 */
+.scan-setup {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 6px 0;
+}
+.scan-setup-header h2 {
+  font-size: 18px;
+  line-height: 1.45;
+}
+.scan-setup-header p {
+  margin: 4px 0 19px;
+  color: var(--muted);
+}
+.scan-dimension-list {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.scan-dimension-list legend {
+  padding: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.scan-dimension-choice {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 5px 10px;
+  padding: 11px 4px;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+}
+.scan-dimension-choice:last-child {
+  border-bottom: 1px solid var(--line);
+}
+.scan-dimension-choice:not(.pending):hover {
+  background-color: var(--surface);
+}
+.scan-dimension-choice.pending {
+  cursor: default;
+}
+.scan-dimension-choice input {
+  width: 16px;
+  height: 16px;
+  margin: 3px 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.scan-dimension-text {
+  display: grid;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+.scan-dimension-text strong {
+  font-weight: 600;
+}
+.scan-dimension-text span, .scan-dimension-state {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.scan-dimension-state {
+  font-size: 12px;
+}
+.pending .scan-dimension-state, .scan-selection-hint {
+  color: var(--warning);
+}
+.scan-selection-hint {
+  margin-top: 8px;
+  font-size: 13px;
+}
+@media (max-width: 540px) {
+  .scan-dimension-choice {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+  .scan-dimension-state {
+    grid-column: 2;
+  }
+}

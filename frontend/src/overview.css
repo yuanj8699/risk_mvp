@@ -1,0 +1,147 @@
+/* 总览以阶段条、可收起的核对记录和左右工作区占满可用高度。 */
+.overview-panel {
+  display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; height:100%;
+  color:#0f172a; background:#fff; font-size:13px; font-variant-numeric:tabular-nums;
+}
+.ov-stages {
+  list-style:none; display:flex; align-items:center; flex:0 0 36px;
+  gap:8px; margin:0; padding:0 18px; border-bottom:1px solid #e5eaf2;
+}
+.ov-stages li { display:flex; align-items:center; gap:8px; min-width:0; flex:1 1 auto; }
+.ov-stages li:last-child {flex:0 1 auto}
+.ov-stages li:not(:last-child)::after {content:''; height:1px; flex:1; background:#cbd5e1}
+.ov-stages li > span, .ov-stages li > button {
+  display:inline-flex; align-items:center; gap:4px; white-space:nowrap; font-size:12px; font-weight:500;
+}
+.ov-stages li > button {padding:3px 4px; background:transparent; border:0; color:inherit; font:inherit; font-size:12px; cursor:pointer}
+.ov-stages li > button:hover {background:#f8fafc}
+.ov-stages b {font-size:11px; color:#475569; font-weight:500}
+.ov-stages svg {width:15px; height:15px; color:#16a34a}
+.ov-stages .ov-fold {height:12px; width:12px; color:#64748b}
+.ov-fold.open {transform:rotate(180deg)}
+.ov-stage-mark, .ov-dot {display:inline-block; width:7px; height:7px; border-radius:50%; flex:none; background:#94a3b8}
+.ov-stages [data-state="warn"] .ov-stage-mark, .ov-dot[data-tone="priority"] {background:#ea580c}
+.ov-stages [data-state="current"] .ov-stage-mark {background:#2563eb}
+.ov-dot[data-tone="watch"] {background:#d98a0c}
+.ov-dot[data-tone="notice"] {background:#8b6940}
+.ov-dot[data-tone="clear"] {background:#16a34a}
+.ov-stage-short {display:none}
+.ov-report-status {
+  position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; flex-shrink:0;
+  padding:7px 16px; background:#f8fafc; border-bottom:1px solid #e5eaf2; color:#475569; font-size:12px;
+}
+.ov-report-status[data-state="completed"] {color:#356455}
+.ov-report-status button {border:0; border-radius:3px; background:transparent; color:#245b9f; padding:2px 0; font:inherit; cursor:pointer}
+.ov-report-status button:disabled {color:#64748b; cursor:wait}
+.ov-report-status progress {width:100%; height:2px; border:0; appearance:none; background:#e2e8f0; accent-color:#537cab}
+.ov-report-status progress::-webkit-progress-bar {background:#e2e8f0}
+.ov-report-status progress::-webkit-progress-value {background:#537cab}
+.ov-report-status progress::-moz-progress-bar {background:#537cab}
+.ov-archiving {padding:14px 18px; color:#475569}
+.ov-columns {display:grid; grid-template-columns:minmax(0,58fr) minmax(0,42fr); flex:1; min-height:0; min-width:0}
+.ov-directory {
+  min-width:0; min-height:0; display:flex; flex-direction:column; padding:0 12px;
+  border-right:1px solid #e5eaf2;
+}
+.ov-detail {min-width:0; min-height:0; display:flex; flex-direction:column; overflow:auto}
+.ov-summary {
+  align-self:flex-start; display:flex; flex-wrap:wrap; align-items:center; gap:5px 11px;
+  border:0; background:transparent; padding:14px 0 9px; font:inherit; font-size:12px; text-align:left; color:inherit; cursor:pointer;
+}
+.ov-summary:hover {color:#334155}
+.ov-summary > span {display:inline-flex; align-items:center; gap:3px; white-space:nowrap}
+.ov-summary b {font-weight:600}
+.ov-summary .ov-dot {margin-right:2px}
+.ov-clipped {margin:2px 0 6px; color:#9a4109; background:#fff7ed; padding:4px 8px; border-left:2px solid #ea580c; font-size:12px}
+.ov-toolbar {display:flex; flex-wrap:wrap; align-items:center; gap:4px; margin:4px 0 11px; min-width:0}
+.ov-toolbar .ov-search {width:100px; min-width:68px; flex:1 1 72px; max-width:170px}
+.ov-toolbar .ov-region {width:120px}
+.ov-toolbar .ov-level {width:98px}
+.ov-toolbar .t-input {box-shadow:none; min-height:25px; border-color:#d8e0eb; font-size:12px; border-radius:4px}
+.ov-toolbar .t-input--focused {border-color:#2563eb}
+.ov-chips {display:flex; align-items:center; flex-wrap:wrap; gap:3px}
+.ov-chips button {
+  min-height:24px; border:1px solid transparent; padding:2px 4px; border-radius:3px;
+  font:inherit; font-size:11px; white-space:nowrap; color:#2254b6; background:#eff6ff; cursor:pointer;
+}
+.ov-chips button:hover {border-color:#bfdbfe}
+.ov-chips button[aria-pressed="true"] {color:#174fba; background:#dbeafe; border-color:#93b9fc}
+.ov-chips button:disabled {border:1px dashed #cbd5e1; color:#64748b; background:#fafbfc; cursor:default}
+.ov-table-scroll {overflow:auto; min-height:0; min-width:0}
+.ov-table,.ov-check-table {border-collapse:collapse; table-layout:fixed; width:100%; font-size:12.5px; text-align:left}
+.ov-table th,.ov-table td {height:35px; box-sizing:border-box; padding:0 6px; border-bottom:1px solid #e5eaf2; white-space:nowrap; text-overflow:ellipsis; overflow:hidden}
+.ov-table th {font-weight:500}
+.ov-table thead th {background:#f8fafc; color:#334155; font-weight:600}
+.ov-table th:first-child {padding-left:8px}
+.ov-table th:last-child,.ov-table td:last-child {text-align:right; padding-right:8px}
+.ov-org-col {width:24%}
+.ov-region-col {width:9%}
+.ov-level-col {width:75px}
+.ov-dim-col {width:16%}
+.ov-count-col {width:46px}
+.ov-table tbody tr {cursor:pointer}
+.ov-table tbody tr:hover {background:#f8fafc}
+.ov-table tbody tr.chosen {background:#eff6ff}
+.ov-table th button {
+  padding:0; display:block; width:100%; color:inherit; font:inherit; text-align:left; background:transparent; border:0;
+  line-height:33px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer;
+}
+.ov-table .ov-dot {margin-right:5px; vertical-align:1px}
+.ov-table th button {display:flex; align-items:center; gap:4px}
+.ov-org-name {overflow:hidden; text-overflow:ellipsis}
+.ov-report-mark {flex:none; color:#486783; font-size:10px; font-weight:400; line-height:1.5}
+.ov-paging {margin-top:auto; padding:10px 2px; display:flex; align-items:center; justify-content:space-between; color:#475569; font-size:12px}
+.ov-paging div {display:flex; gap:8px; align-items:center}
+.ov-paging button,.ov-empty button,.ov-validation button {
+  background:transparent; border:0; color:#2563eb; font:inherit; padding:2px 4px; cursor:pointer;
+}
+.ov-paging button {display:inline-grid; place-items:center; width:26px; height:26px; color:#475569}
+.ov-paging button:hover,.ov-validation button:hover {background:#eff6ff}
+.ov-paging button:disabled {color:#94a3b8; cursor:default}
+.ov-empty {font-size:13px; color:#475569; padding:12px 4px}
+.ov-validation {flex:0 1 auto; min-height:58px; max-height:36vh; overflow:auto; padding:11px 16px; border-bottom:1px solid #e5eaf2; background:#f8fafc; font-size:12px; color:#334155}
+.ov-validation header {display:flex; justify-content:space-between; align-items:center; gap:8px}
+.ov-validation h2 {margin:0; font-size:14px; color:#0f172a}
+.ov-validation p {margin:7px 0; line-height:1.6}
+.ov-validation details {border-bottom:1px solid #e5eaf2}
+.ov-validation summary {padding:5px 0; cursor:pointer}
+.ov-validation ul {padding-inline-start:18px; margin:5px 0; line-height:1.6}
+.ov-check-scroll {overflow:auto; max-height:19vh; margin:9px 0}
+.ov-check-table {font-size:12px; table-layout:auto; width:100%; min-width:550px}
+.ov-check-table thead th {position:sticky; top:0; background:#f0f3f7}
+.ov-check-table td,.ov-check-table th {padding:4px 6px; border-bottom:1px solid #e5eaf2; text-align:left}
+.ov-check-table tbody th {font-weight:500}
+.ov-mismatch {color:#af4207}
+.ov-check-notes {color:#475569}
+@media (max-width:980px) {
+  .ov-stages {gap:5px; padding:0 10px}
+  .ov-stages li {gap:4px}
+}
+@media (max-width:840px) {
+  .overview-panel {height:auto; min-height:100%; flex:1 0 auto}
+  .ov-columns {display:flex; flex-direction:column; flex:1 0 auto}
+  .ov-directory {border:0; border-bottom:1px solid #e5eaf2}
+  .ov-detail {overflow:visible; flex:1 0 auto}
+  .ov-table-scroll {overflow:visible}
+}
+@media (max-width:640px) {
+  .ov-directory {padding:0 10px}
+  .ov-stages {padding:0 10px; gap:5px}
+  .ov-stage-full,.ov-stages .ov-fold {display:none}
+  .ov-stage-short {display:inline}
+  .ov-stages li > span,.ov-stages li > button {gap:2px; padding:0; font-size:11px}
+  .ov-stages b {font-size:10px}
+  .ov-stages svg {width:12px; height:12px}
+  .ov-summary {gap:5px 10px; padding:10px 0 5px}
+  .ov-toolbar {row-gap:6px}
+  .ov-toolbar .ov-search {max-width:none}
+  .ov-chips {flex-basis:100%}
+  .ov-table {font-size:12px}
+  .ov-table td,.ov-table th {padding:0 4px}
+  .ov-dim-col,.ov-region-col,.ov-dim-cell,.ov-region-cell {display:none}
+  .ov-org-col {width:32%}
+  .ov-level-col {width:68px}
+  .ov-count-col {width:40px}
+  .ov-paging {padding:5px 2px}
+  .ov-validation {max-height:42vh; padding:9px 10px}
+}

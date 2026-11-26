@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from sqlalchemy import select, func, case, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from .models import AnalysisRun, Indicator, Observation, Organization, Rule, SessionLocal, Snapshot
+from .models import AnalysisRun, Indicator, Observation, Organization, RiskCase, Rule, SessionLocal, Snapshot
 
 
 class ServiceError(ValueError):
@@ -158,7 +158,25 @@ def load_task_context(run_id: str, org_id: str | None = None) -> dict:
             if org_id not in context["org_scope"]:
                 raise ServiceError("SCOPE_VIOLATION", "当前行社不属于任务授权范围")
             context["org_scope"] = [org_id]
+            if run.selection.get("kind") == "risk_scan":
+                context["letter_org_id"] = org_id
         return context
+
+
+@contextmanager
+def letter_case_session(context):
+    """撰函只读取已完成扫描；即使扫描仅可见一家，也须由宿主显式绑定行社。"""
+    org_id = context.get("letter_org_id")
+    if not org_id or context["org_scope"] != [org_id]:
+        raise ServiceError("SCOPE_VIOLATION", "撰函工具需要绑定扫描任务及当前行社")
+    with read_session() as db:
+        run = db.get(AnalysisRun, context["run_id"])
+        if not run or run.selection.get("kind") != "risk_scan" or run.status != "completed":
+            raise ServiceError("SCOPE_VIOLATION", "撰函只允许读取已完成的风险扫描")
+        case = db.scalar(select(RiskCase).where(RiskCase.run_id == run.id, RiskCase.org_id == org_id))
+        if not case:
+            raise ServiceError("SOURCE_ERROR", "扫描尚无该行社的归档观测")
+        yield db, run, case
 
 
 def _page(limit: int, offset: int) -> None:

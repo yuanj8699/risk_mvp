@@ -1,0 +1,1382 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-11-24",
+  "scope_note": "面向全体82家行社，同时支持按地市或单行社下钻；法定监管底线与行业/项目参考预警线严格区分，不把参考线冒充法定红线。",
+  "threshold_rules": [
+    {
+      "id": "npl_ratio_warning",
+      "dimension_id": "credit_risk",
+      "dimension_title": "信用风险防控压力加大",
+      "metric": "五级不良贷款率",
+      "aliases": [
+        "不良贷款率",
+        "不良率",
+        "五级不良率"
+      ],
+      "threshold_expr": "＞1.5%",
+      "basis_level": "行业参考预警线",
+      "basis_detail": "商业银行行业平均不良率约1.5%-1.6%（法定监管红线为5%），全辖筛查优先采用＞1.5%作为风险预警关注线；若用户指定其他阈值则以用户为准。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中五级不良贷款率＞1.5%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的五级不良贷款率是多少？",
+      "drilldown_metrics": [
+        "五级不良贷款余额",
+        "五级不良贷款率比年初增长点",
+        "当年新发生不良额",
+        "拨备覆盖率"
+      ]
+    },
+    {
+      "id": "npl_balance_top15",
+      "dimension_id": "credit_risk",
+      "dimension_title": "信用风险防控压力加大",
+      "metric": "五级不良贷款余额",
+      "aliases": [
+        "不良贷款余额",
+        "不良余额"
+      ],
+      "threshold_expr": "排名前15%",
+      "basis_level": "项目参考筛查口径（源自业务Excel）",
+      "basis_detail": "源自业务《指标反映的风险问题v1》单项指标问题，用于筛查全辖不良贷款规模靠前的行社。",
+      "query_type": "rank",
+      "all_banks_template": "{period}，全部行社中五级不良贷款余额排名前15%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的五级不良贷款余额及全省排名是多少？",
+      "drilldown_metrics": [
+        "五级不良贷款余额比年初增量",
+        "五级不良贷款余额比年初增幅",
+        "大额贷款不良余额"
+      ]
+    },
+    {
+      "id": "npl_balance_growth_warn",
+      "dimension_id": "credit_risk",
+      "dimension_title": "信用风险防控压力加大",
+      "metric": "五级不良贷款余额比年初增幅",
+      "aliases": [
+        "不良贷款余额较年初增幅",
+        "不良余额增幅",
+        "不良余额增速"
+      ],
+      "threshold_expr": "＞30%",
+      "basis_level": "项目监测参考线",
+      "basis_detail": "源自《104项业务定义·监测条件对照》（宽表54项参考条件：较年初＞30%）。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中五级不良贷款余额较年初增幅＞30%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的五级不良贷款余额较年初增幅是多少？",
+      "drilldown_metrics": [
+        "五级不良贷款余额",
+        "五级不良贷款余额比年初增量"
+      ]
+    },
+    {
+      "id": "npl_ratio_rise_warn",
+      "dimension_id": "credit_risk",
+      "dimension_title": "信用风险防控压力加大",
+      "metric": "五级不良贷款率比年初增长点",
+      "aliases": [
+        "不良贷款率较年初增长点",
+        "不良率上升",
+        "不良率增幅"
+      ],
+      "threshold_expr": "＞0.2个百分点",
+      "basis_level": "项目监测参考线",
+      "basis_detail": "源自《104项业务定义·监测条件对照》（宽表55项参考条件：较年初上升超过0.2个百分点）。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中五级不良贷款率较年初上升超过0.2个百分点的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的五级不良贷款率较年初增长点是多少？",
+      "drilldown_metrics": [
+        "五级不良贷款率",
+        "各项贷款余额"
+      ]
+    },
+    {
+      "id": "special_mention_top15",
+      "dimension_id": "credit_risk",
+      "dimension_title": "信用风险防控压力加大",
+      "metric": "关注类贷款率",
+      "aliases": [
+        "关注类贷款占比",
+        "关注贷款率",
+        "关注类贷款余额",
+        "关注类贷款"
+      ],
+      "threshold_expr": "排名前15%",
+      "basis_level": "项目参考筛查口径（源自业务Excel）",
+      "basis_detail": "用于识别潜在信用风险迁徙压力较大的行社；原表未设绝对红线，按全辖前15%筛查。",
+      "query_type": "rank",
+      "all_banks_template": "{period}，全部行社中关注类贷款占比排名前15%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的关注类贷款占比及较年初增长点是多少？",
+      "drilldown_metrics": [
+        "关注类贷款余额",
+        "关注类贷款率比年初增长点",
+        "逾期贷款率"
+      ]
+    },
+    {
+      "id": "overdue_loan_top15",
+      "dimension_id": "credit_risk",
+      "dimension_title": "信用风险防控压力加大",
+      "metric": "逾期贷款率",
+      "aliases": [
+        "逾期贷款占比",
+        "逾期率",
+        "逾期贷款余额",
+        "逾期贷款"
+      ],
+      "threshold_expr": "排名前15%",
+      "basis_level": "项目参考筛查口径（源自业务Excel）",
+      "basis_detail": "用于识别潜在逾期风险靠前的行社；支持进一步下钻逾期90天以上贷款与不良偏离度。",
+      "query_type": "rank",
+      "all_banks_template": "{period}，全部行社中逾期贷款占比排名前15%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的逾期贷款占比及较年初变化是多少？",
+      "drilldown_metrics": [
+        "逾期贷款余额",
+        "逾期贷款率比年初增长点",
+        "五级不良贷款率"
+      ]
+    },
+    {
+      "id": "large_loan_npl_top15",
+      "dimension_id": "credit_risk",
+      "dimension_title": "信用风险防控压力加大",
+      "metric": "大额贷款不良率",
+      "aliases": [
+        "大额贷款不良余额",
+        "大额贷款占比",
+        "大额贷款",
+        "大额不良"
+      ],
+      "threshold_expr": "排名前15%",
+      "basis_level": "项目参考筛查口径（源自业务Excel）",
+      "basis_detail": "结合行内大额贷款专表监测大额贷款集中及不良风险。",
+      "query_type": "rank",
+      "all_banks_template": "{period}，全部行社中大额贷款不良率排名前15%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的大额贷款不良率及大额贷款不良余额是多少？",
+      "drilldown_metrics": [
+        "大额贷款余额",
+        "大额贷款占各项贷款比例",
+        "大额贷款不良余额"
+      ]
+    },
+    {
+      "id": "provision_coverage_redline",
+      "dimension_id": "capital_and_buffer",
+      "dimension_title": "风险抵补能力有所削弱",
+      "metric": "拨备覆盖率",
+      "aliases": [
+        "拨备",
+        "贷款损失准备覆盖率",
+        "拨备不足"
+      ],
+      "threshold_expr": "＜150%",
+      "basis_level": "监管稳健线（银发〔2018〕7号）",
+      "basis_detail": "商业银行拨备覆盖率一般稳健监管要求不低于150%（差异化最低监管要求为120%-150%）。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中拨备覆盖率＜150%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的拨备覆盖率及较年初增长点是多少？",
+      "drilldown_metrics": [
+        "拨备覆盖率比年初增长点",
+        "贷款拨备率",
+        "五级不良贷款余额"
+      ]
+    },
+    {
+      "id": "provision_to_loan_redline",
+      "dimension_id": "capital_and_buffer",
+      "dimension_title": "风险抵补能力有所削弱",
+      "metric": "贷款拨备率",
+      "aliases": [
+        "拨贷比"
+      ],
+      "threshold_expr": "＜1.5%",
+      "basis_level": "监管最低档（银发〔2018〕7号）",
+      "basis_detail": "商业银行贷款拨备率最低监管要求为1.5%-2.5%（与拨备覆盖率联动实行差异化考核）。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中贷款拨备率＜1.5%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的贷款拨备率是多少？",
+      "drilldown_metrics": [
+        "拨备覆盖率",
+        "五级不良贷款率"
+      ]
+    },
+    {
+      "id": "car_redline",
+      "dimension_id": "capital_and_buffer",
+      "dimension_title": "风险抵补能力有所削弱",
+      "metric": "资本充足率",
+      "aliases": [
+        "资本充足",
+        "一级资本充足率",
+        "核心一级资本充足率",
+        "资本红线"
+      ],
+      "threshold_expr": "＜10.5%",
+      "basis_level": "法定监管底线（《商业银行资本管理办法》）",
+      "basis_detail": "非系统重要性商业银行资本充足率不得低于10.5%、一级资本充足率不得低于8.5%、核心一级资本充足率不得低于7.5%。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中资本充足率＜10.5%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的资本充足率、一级资本充足率和核心一级资本充足率分别是多少？",
+      "drilldown_metrics": [
+        "一级资本充足率",
+        "核心一级资本充足率",
+        "净利润"
+      ]
+    },
+    {
+      "id": "nim_warning",
+      "dimension_id": "capital_and_buffer",
+      "dimension_title": "风险抵补能力有所削弱",
+      "metric": "净息差",
+      "aliases": [
+        "息差",
+        "净利差"
+      ],
+      "threshold_expr": "＜1.8%",
+      "basis_level": "项目监测参考线",
+      "basis_detail": "源自《104项业务定义·监测条件对照》（宽表103项参考条件：净息差＜1.8%，核实年化口径）。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中净息差＜1.8%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的净息差及同比增长点是多少？",
+      "drilldown_metrics": [
+        "净息差同比增长点",
+        "净利润",
+        "营业净收入"
+      ]
+    },
+    {
+      "id": "net_profit_loss",
+      "dimension_id": "capital_and_buffer",
+      "dimension_title": "风险抵补能力有所削弱",
+      "metric": "净利润",
+      "aliases": [
+        "亏损",
+        "盈利下滑",
+        "净利润同比"
+      ],
+      "threshold_expr": "＜0",
+      "basis_level": "业务风险预警（源自业务Excel）",
+      "basis_detail": "筛查出现账面亏损或净利润同比大幅下滑的行社。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中净利润＜0的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的净利润及同比增幅分别是多少？",
+      "drilldown_metrics": [
+        "净利润同比增幅",
+        "营业净收入同比增量",
+        "净息差"
+      ]
+    },
+    {
+      "id": "treasury_asset_ratio_warn",
+      "dimension_id": "treasury_risk",
+      "dimension_title": "资金业务需加强风险管控",
+      "metric": "资金业务总资产占总资产比例",
+      "aliases": [
+        "资金业务占比",
+        "资金业务资产占比",
+        "资金业务资产占总资产比例"
+      ],
+      "threshold_expr": "＞40%",
+      "basis_level": "项目监测参考线",
+      "basis_detail": "源自《104项业务定义·监测条件对照》（宽表41项参考条件：资金业务总资产占资产比例＞40%）。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中资金业务总资产占总资产比例＞40%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的资金业务总资产占总资产比例是多少？",
+      "drilldown_metrics": [
+        "资金业务总资产余额",
+        "资金业务不良余额",
+        "债券投资业务余额"
+      ]
+    },
+    {
+      "id": "bond_growth_warn",
+      "dimension_id": "treasury_risk",
+      "dimension_title": "资金业务需加强风险管控",
+      "metric": "债券投资业务余额比年初增幅",
+      "aliases": [
+        "债券投资增速",
+        "债券规模增速",
+        "债券扩张"
+      ],
+      "threshold_expr": "＞50%",
+      "basis_level": "项目监测参考线",
+      "basis_detail": "源自《104项业务定义·监测条件对照》（宽表45项参考条件：债券投资规模较年初增速＞50%）。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中债券投资业务余额较年初增幅＞50%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的债券投资业务余额及较年初增幅是多少？",
+      "drilldown_metrics": [
+        "债券投资业务余额",
+        "本币债券公允价值变动余额",
+        "本币债券加权平均修正久期"
+      ]
+    },
+    {
+      "id": "bond_fair_value_loss",
+      "dimension_id": "treasury_risk",
+      "dimension_title": "资金业务需加强风险管控",
+      "metric": "本币债券公允价值变动余额",
+      "aliases": [
+        "债券浮亏",
+        "公允价值变动",
+        "低评级债券",
+        "债券久期"
+      ],
+      "threshold_expr": "＜0",
+      "basis_level": "字典外补充指标（源自业务Excel）",
+      "basis_detail": "用于通过小Q补查字典外债券市场风险（浮亏、久期、低评级持仓及压力测试）。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中本币债券公允价值变动余额＜0的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的本币债券公允价值变动余额及加权平均修正久期分别是多少？",
+      "drilldown_metrics": [
+        "本币债券加权平均修正久期",
+        "低评级债券持有面额",
+        "债券收益率曲线上移10bp压力测试"
+      ]
+    },
+    {
+      "id": "local_loanable_fund_ratio",
+      "dimension_id": "rural_micro_positioning",
+      "dimension_title": "支农支小定位有待夯实",
+      "metric": "新增可贷资金用于当地比例",
+      "aliases": [
+        "新增可贷资金",
+        "当地比例",
+        "可贷资金用于当地"
+      ],
+      "threshold_expr": "＜70%",
+      "basis_level": "业务定位监测标准（源自业务Excel）",
+      "basis_detail": "筛查新增可贷资金为正但用于当地比例低于70%的行社（字典外指标，适合小Q补查）。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中新增可贷资金为正且用于当地比例＜70%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的新增可贷资金用于当地比例是多少？",
+      "drilldown_metrics": [
+        "新增可贷资金余额",
+        "涉农及小微企业贷款占比"
+      ]
+    },
+    {
+      "id": "agri_micro_loan_ratio",
+      "dimension_id": "rural_micro_positioning",
+      "dimension_title": "支农支小定位有待夯实",
+      "metric": "涉农及小微企业贷款占比",
+      "aliases": [
+        "涉农贷款占比",
+        "普惠小微",
+        "农小定位",
+        "支农支小"
+      ],
+      "threshold_expr": "＜70%",
+      "basis_level": "业务定位监测标准（源自业务Excel）",
+      "basis_detail": "监测农商行支农支小定位：涉农及小微企业贷款占比低于70%且未较年初提升2个百分点。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中涉农及小微企业贷款占比＜70%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的涉农及小微企业贷款占比及普惠贷款增速分别是多少？",
+      "drilldown_metrics": [
+        "普惠型农户及小微贷款合并增速",
+        "各项贷款增速"
+      ]
+    },
+    {
+      "id": "bill_business_warn",
+      "dimension_id": "rural_micro_positioning",
+      "dimension_title": "支农支小定位有待夯实",
+      "metric": "票贷比",
+      "aliases": [
+        "承兑汇票增长率",
+        "承兑汇票",
+        "贴现",
+        "转贴现",
+        "票据业务"
+      ],
+      "threshold_expr": "＞2%",
+      "basis_level": "业务定位监测标准（源自业务Excel）",
+      "basis_detail": "监测票据依赖度：票贷比超过2%或承兑汇票增长率超过15%（字典外指标，适合小Q补查）。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中票贷比＞2%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的票贷比及承兑汇票增长率分别是多少？",
+      "drilldown_metrics": [
+        "承兑汇票增长率",
+        "贴现及转贴现占各项贷款比例"
+      ]
+    },
+    {
+      "id": "concentration_redline",
+      "dimension_id": "treasury_risk",
+      "dimension_title": "资金业务与集中度风险管控",
+      "metric": "单一集团客户授信集中度",
+      "aliases": [
+        "集中度",
+        "大客户集中度",
+        "非同业集团客户风险暴露集中度",
+        "全部关联度"
+      ],
+      "threshold_expr": "＞10%",
+      "basis_level": "法定监管底线（《商业银行风险监管核心指标》）",
+      "basis_detail": "单一集团客户授信集中度不高于10%（全部关联度不高于50%），用于补查大客户集中度风险。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中单一集团客户授信集中度＞10%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的单一集团客户授信集中度及全部关联度分别是多少？",
+      "drilldown_metrics": [
+        "全部关联度",
+        "非同业集团客户风险暴露集中度",
+        "大额贷款占各项贷款比例"
+      ]
+    },
+    {
+      "id": "liquidity_ratio_redline",
+      "dimension_id": "key_business_mgmt",
+      "dimension_title": "流动性与重点业务管理",
+      "metric": "流动性比例",
+      "aliases": [
+        "流动性",
+        "流动性风险",
+        "核心负债比例",
+        "存贷比"
+      ],
+      "threshold_expr": "＜25%",
+      "basis_level": "法定监管底线（《商业银行风险监管核心指标》）",
+      "basis_detail": "商业银行流动性比例不得低于25%，核心负债比例不得低于60%。",
+      "query_type": "filter",
+      "all_banks_template": "{period}，全部行社中流动性比例＜25%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的流动性比例及核心负债比例分别是多少？",
+      "drilldown_metrics": [
+        "核心负债比例",
+        "各项存款余额",
+        "异地大额存款金额"
+      ]
+    },
+    {
+      "id": "nonlocal_business_top15",
+      "dimension_id": "key_business_mgmt",
+      "dimension_title": "重点业务管理",
+      "metric": "异地贷款余额（不含转贴现）",
+      "aliases": [
+        "异地贷款",
+        "异地大额存款",
+        "非涉农银团贷款",
+        "异地业务"
+      ],
+      "threshold_expr": "排名前15%",
+      "basis_level": "项目参考筛查口径（源自业务Excel）",
+      "basis_detail": "重点业务管理（异地大额存款、异地贷款、非涉农银团贷款）当前在字典外，适合通过小Q实时补查。",
+      "query_type": "rank",
+      "all_banks_template": "{period}，全部行社中异地贷款余额（不含转贴现）排名前15%的行社是哪几家，分别是多少？",
+      "single_bank_template": "{period}，{org}的异地贷款余额（不含转贴现）及较年初变化是多少？",
+      "drilldown_metrics": [
+        "异地大额存款金额",
+        "非涉农银团贷款余额"
+      ]
+    }
+  ],
+  "excel_templates": [
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良贷款余额与不良率“双升”，新形成不良增加",
+      "letter_metric": "不良贷款余额",
+      "bank_metric": "五级不良贷款余额",
+      "original_excel_question": "本期XX地区不良贷款余额在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中不良贷款余额在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": "{period}，全部行社的信用风险情况如何，哪些行社不良贷款余额和不良率双升？"
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良贷款余额与不良率“双升”，新形成不良增加",
+      "letter_metric": "不良贷款余额比年初增量",
+      "bank_metric": "五级不良贷款余额比年初增量",
+      "original_excel_question": "本期XX地区不良贷款余额较年初增量最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中不良贷款余额较年初增量最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良贷款余额与不良率“双升”，新形成不良增加",
+      "letter_metric": "不良贷款余额比年初增幅",
+      "bank_metric": "五级不良贷款余额比年初增幅",
+      "original_excel_question": "本期XX地区不良贷款余额较年初增幅在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中不良贷款余额较年初增幅在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良贷款余额与不良率“双升”，新形成不良增加",
+      "letter_metric": "",
+      "bank_metric": "五级不良贷款余额比年初增幅排名",
+      "original_excel_question": "本期XX地区各行社的五级不良贷款余额比年初增幅排名分别是多少？",
+      "all_banks_template": "{period}，全部行社的五级不良贷款余额比年初增幅排名分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良贷款余额与不良率“双升”，新形成不良增加",
+      "letter_metric": "不良贷款余额增幅与辖内银行业平均比较",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区不良贷款余额增幅高于辖内银行业平均水平的行社有哪些？",
+      "all_banks_template": "{period}，全部行社中不良贷款余额增幅高于辖内银行业平均水平的行社有哪些？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良贷款余额与不良率“双升”，新形成不良增加",
+      "letter_metric": "不良贷款率",
+      "bank_metric": "五级不良贷款率",
+      "original_excel_question": "本期XX地区不良贷款率在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中不良贷款率在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良贷款余额与不良率“双升”，新形成不良增加",
+      "letter_metric": "不良贷款率比年初增长点",
+      "bank_metric": "五级不良贷款率比年初增长点",
+      "original_excel_question": "本期XX地区不良贷款率较年初增长点最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中不良贷款率较年初增长点最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良贷款余额与不良率“双升”，新形成不良增加",
+      "letter_metric": "不良贷款率变化与辖内银行业比较",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区不良贷款率上升幅度高于辖内银行业的行社有哪些？",
+      "all_banks_template": "{period}，全部行社中不良贷款率上升幅度高于辖内银行业的行社有哪些？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良贷款余额与不良率“双升”，新形成不良增加",
+      "letter_metric": "本年新形成不良贷款",
+      "bank_metric": "当年新发生不良额（口径相近）",
+      "original_excel_question": "XX地区今年新形成不良贷款金额最多的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社当年新形成不良贷款金额最多的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良贷款余额与不良率“双升”，新形成不良增加",
+      "letter_metric": "本年新形成不良贷款同比增量",
+      "bank_metric": "当年新发生不良额同比增量（口径相近）",
+      "original_excel_question": "XX地区今年新形成不良贷款金额同比增量最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社当年新形成不良贷款金额同比增量最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "潜在信用风险：关注类贷款增加",
+      "letter_metric": "关注类贷款余额",
+      "bank_metric": "关注类贷款余额",
+      "original_excel_question": "本期XX地区关注类贷款余额在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中关注类贷款余额在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": "{period}，全部行社中哪些行社关注类贷款占比偏高，且余额较年初增长较快？"
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "潜在信用风险：关注类贷款增加",
+      "letter_metric": "关注类贷款余额比年初增量",
+      "bank_metric": "关注类贷款余额比年初增量",
+      "original_excel_question": "本期XX地区关注类贷款余额较年初增量最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中关注类贷款余额较年初增量最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "潜在信用风险：关注类贷款增加",
+      "letter_metric": "关注类贷款余额比年初增幅",
+      "bank_metric": "关注类贷款余额比年初增幅",
+      "original_excel_question": "本期XX地区关注类贷款余额较年初增幅在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中关注类贷款余额较年初增幅在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "潜在信用风险：关注类贷款增加",
+      "letter_metric": "关注类贷款占比",
+      "bank_metric": "关注类贷款率",
+      "original_excel_question": "本期XX地区关注类贷款占比在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中关注类贷款占比在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "潜在信用风险：关注类贷款增加",
+      "letter_metric": "关注类贷款占比比年初增长点",
+      "bank_metric": "关注类贷款率比年初增长点",
+      "original_excel_question": "本期XX地区关注类贷款占比较年初增长点最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中关注类贷款占比较年初增长点最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "潜在信用风险：逾期贷款增加",
+      "letter_metric": "逾期贷款余额",
+      "bank_metric": "逾期贷款余额",
+      "original_excel_question": "本期XX地区逾期贷款余额在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中逾期贷款余额在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": "{period}，全部行社逾期贷款压力最大的行社是哪几家，压力主要体现在哪些指标？"
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "潜在信用风险：逾期贷款增加",
+      "letter_metric": "逾期贷款余额比年初增量",
+      "bank_metric": "逾期贷款余额比年初增量",
+      "original_excel_question": "本期XX地区逾期贷款余额较年初增量最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中逾期贷款余额较年初增量最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "潜在信用风险：逾期贷款增加",
+      "letter_metric": "逾期贷款余额比年初增幅",
+      "bank_metric": "逾期贷款余额比年初增幅",
+      "original_excel_question": "本期XX地区逾期贷款余额较年初增幅在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中逾期贷款余额较年初增幅在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "潜在信用风险：逾期贷款增加",
+      "letter_metric": "逾期贷款占比",
+      "bank_metric": "逾期贷款率",
+      "original_excel_question": "本期XX地区逾期贷款占比在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中逾期贷款占比在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "潜在信用风险：逾期贷款增加",
+      "letter_metric": "逾期贷款占比比年初增长点",
+      "bank_metric": "逾期贷款率比年初增长点",
+      "original_excel_question": "本期XX地区逾期贷款占比较年初增长点最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中逾期贷款占比较年初增长点最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良处置主要依靠核销",
+      "letter_metric": "处置不良贷款金额",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区处置不良贷款金额最少的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中处置不良贷款金额最少的行社是哪几家？",
+      "composite_template": "{period}，全部行社中哪些行社不良处置跟不上风险形成，且主要依靠核销？"
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良处置主要依靠核销",
+      "letter_metric": "处置不良贷款同比增量",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区处置不良贷款同比增量最小的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中处置不良贷款同比增量最小的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良处置主要依靠核销",
+      "letter_metric": "处置不良资产金额",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区处置不良资产金额最少的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中处置不良资产金额最少的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良处置主要依靠核销",
+      "letter_metric": "处置不良资产同比增量",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区处置不良资产同比增量最小的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中处置不良资产同比增量最小的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良处置主要依靠核销",
+      "letter_metric": "不良贷款核销率",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区不良贷款核销率在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中不良贷款核销率在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "不良处置主要依靠核销",
+      "letter_metric": "不良贷款核销率同比变化",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区各行社的不良贷款核销率同比变化分别是多少？",
+      "all_banks_template": "{period}，全部行社的不良贷款核销率同比变化分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "大额贷款不良风险",
+      "letter_metric": "大额贷款余额",
+      "bank_metric": "大额贷款余额（大额贷款专表）",
+      "original_excel_question": "本期XX地区大额贷款余额在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中大额贷款余额在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": "{period}，全部行社的大额贷款风险主要集中在哪些行社？"
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "大额贷款不良风险",
+      "letter_metric": "大额贷款余额比年初增量",
+      "bank_metric": "大额贷款余额比年初增量（专表）",
+      "original_excel_question": "本期XX地区大额贷款余额较年初增量最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中大额贷款余额较年初增量最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "大额贷款不良风险",
+      "letter_metric": "大额贷款余额比年初增幅",
+      "bank_metric": "大额贷款余额比年初增幅（专表）",
+      "original_excel_question": "本期XX地区大额贷款余额较年初增幅在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中大额贷款余额较年初增幅在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "大额贷款不良风险",
+      "letter_metric": "大额贷款占各项贷款比例",
+      "bank_metric": "大额贷款占各项贷款比例（专表及各项贷款）",
+      "original_excel_question": "本期XX地区大额贷款占各项贷款比例在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中大额贷款占各项贷款比例在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "大额贷款不良风险",
+      "letter_metric": "大额贷款占比比年初增长点",
+      "bank_metric": "大额贷款占各项贷款比例比年初增长点",
+      "original_excel_question": "本期XX地区大额贷款占比较年初增长点最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中大额贷款占比较年初增长点最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "大额贷款不良风险",
+      "letter_metric": "大额贷款不良余额",
+      "bank_metric": "大额贷款不良余额（专表）",
+      "original_excel_question": "本期XX地区大额贷款不良余额在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中大额贷款不良余额在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "大额贷款不良风险",
+      "letter_metric": "大额贷款不良余额比年初增量",
+      "bank_metric": "大额贷款不良余额比年初增量（专表）",
+      "original_excel_question": "本期XX地区大额贷款不良余额较年初增量最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中大额贷款不良余额较年初增量最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "credit_risk",
+      "risk_point": "信用风险防控压力加大",
+      "aspect": "大额贷款不良风险",
+      "letter_metric": "大额贷款不良率",
+      "bank_metric": "大额贷款不良率（专表）",
+      "original_excel_question": "本期XX地区大额贷款不良率在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中大额贷款不良率在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "部分机构市场定位指标弱化",
+      "letter_metric": "普惠型农户及小微贷款合并增速",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区普惠型农户及小微贷款合并增速在全部行社中排名后15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中普惠型农户及小微贷款合并增速在全部行社中排名后15%的行社是哪几家？",
+      "composite_template": "{period}，全部行社中哪些行社普惠贷款增速落后于各项贷款增速？"
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "部分机构市场定位指标弱化",
+      "letter_metric": "各项贷款增速",
+      "bank_metric": "各项贷款余额（人行）比年初增幅",
+      "original_excel_question": "本期XX地区各行社的各项贷款较年初增速分别是多少？",
+      "all_banks_template": "{period}，全部行社的各项贷款较年初增速分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "部分机构市场定位指标弱化",
+      "letter_metric": "普惠贷款与各项贷款增速差",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区普惠贷款增速与各项贷款增速之差最小的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中普惠贷款增速与各项贷款增速之差最小的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "新增可贷资金用于当地不足",
+      "letter_metric": "新增可贷资金用于当地比例低于70%",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区新增可贷资金为正、用于当地比例低于70%的行社有哪些？",
+      "all_banks_template": "{period}，全部行社中新增可贷资金为正、用于当地比例低于70%的行社有哪些？",
+      "composite_template": "{period}，全部行社中哪些行社新增可贷资金为正，但用于当地的比例低于70%？"
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "新增可贷资金用于当地不足",
+      "letter_metric": "新增可贷资金余额余额为正",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区新增可贷资金余额为正的行社有哪些？",
+      "all_banks_template": "{period}，全部行社中新增可贷资金余额为正的行社有哪些？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "涉农及小微企业贷款占比、增速未达到要求",
+      "letter_metric": "涉农及小微企业贷款占比",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区涉农及小微企业贷款占比在全部行社中排名后15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中涉农及小微企业贷款占比在全部行社中排名后15%的行社是哪几家？",
+      "composite_template": "{period}，全部行社中哪些行社涉农及小微企业贷款占比不足、提升不够或增速偏低？"
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "涉农及小微企业贷款占比、增速未达到要求",
+      "letter_metric": "涉农及小微企业贷款占比比年初占比低于70%且未较年初提升2个百分点；",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区涉农及小微企业贷款占比低于70%且未较年初提升2个百分点的行社有哪些？",
+      "all_banks_template": "{period}，全部行社中涉农及小微企业贷款占比低于70%且未较年初提升2个百分点的行社有哪些？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "涉农及小微企业贷款占比、增速未达到要求",
+      "letter_metric": "涉农与小微企业贷款增速；占比低于80%且未较年初提升",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区涉农及小微企业贷款占比低于80%且未较年初提升的行社，其相关贷款增速分别是多少？",
+      "all_banks_template": "{period}，全部行社中涉农及小微企业贷款占比低于80%且未较年初提升的行社，其相关贷款增速分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "票据业务增长较快",
+      "letter_metric": "贴现及买断式转贴现业务余额",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区贴现及买断式转贴现业务余额在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中贴现及买断式转贴现业务余额在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": "{period}，全部行社中哪些行社票据业务增长较快，贷款增长对票据的依赖较大？"
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "票据业务增长较快",
+      "letter_metric": "贴现及买断式转贴现同比增量",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区贴现及买断式转贴现同比增量最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中贴现及买断式转贴现同比增量最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "票据业务增长较快",
+      "letter_metric": "贴现及转贴现占各项贷款比例",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区贴现及转贴现占各项贷款比例在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中贴现及转贴现占各项贷款比例在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "票据业务增长较快",
+      "letter_metric": "新增贴现及转贴现占新增贷款比例",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区新增贴现及转贴现占新增贷款比例在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中新增贴现及转贴现占新增贷款比例在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "票据业务增长较快",
+      "letter_metric": "承兑汇票余额",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区承兑汇票余额在全部行社中排名前15%的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中承兑汇票余额在全部行社中排名前15%的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "票据业务增长较快",
+      "letter_metric": "承兑汇票余额同比增量",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区承兑汇票余额同比增量最大的行社是哪几家？",
+      "all_banks_template": "{period}，全部行社中承兑汇票余额同比增量最大的行社是哪几家？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "票据业务增长较快",
+      "letter_metric": "承兑汇票增长率超15%。",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区承兑汇票增长率超过15%的行社有哪些？",
+      "all_banks_template": "{period}，全部行社中承兑汇票增长率超过15%的行社有哪些？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "rural_micro_positioning",
+      "risk_point": "支农支小定位有待夯实",
+      "aspect": "票据业务增长较快",
+      "letter_metric": "票贷比超过2%",
+      "bank_metric": "",
+      "original_excel_question": "本期XX地区票贷比超过2%的行社有哪些？",
+      "all_banks_template": "{period}，全部行社中票贷比超过2%的行社有哪些？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "资金业务资产占比较高",
+      "letter_metric": "资金业务资产余额",
+      "bank_metric": "资金业务总资产余额",
+      "original_excel_question": "XX地区各行社的资金业务资产余额分别是多少？",
+      "all_banks_template": "{period}，全部行社的资金业务资产余额分别是多少？",
+      "composite_template": "{period}，全部行社资金业务风险最突出的行社是哪几家？"
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "资金业务资产占比较高",
+      "letter_metric": "资金业务资产余额比年初增量",
+      "bank_metric": "资金业务总资产余额比年初增量",
+      "original_excel_question": "XX地区哪些行社资金业务资产余额较年初增加，分别增加多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社资金业务资产余额较年初增加，分别增加多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "资金业务资产占比较高",
+      "letter_metric": "资金业务资产余额比年初增幅",
+      "bank_metric": "资金业务总资产余额比年初增幅",
+      "original_excel_question": "XX地区各行社资金业务资产余额比年初增幅分别是多少，哪些行社增幅在全部行社中排名前15%？",
+      "all_banks_template": "{period}，全部行社资金业务资产余额比年初增幅分别是多少，哪些行社增幅在全部行社中排名前15%？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "资金业务资产占比较高",
+      "letter_metric": "资金业务增速与总资产增速比较",
+      "bank_metric": "资金业务总资产余额比年初增幅；2 资产总额比年初增幅（两者比较）",
+      "original_excel_question": "XX地区哪些行社资金业务资产余额比年初增幅高于总资产比年初增幅，分别高出多少个百分点？",
+      "all_banks_template": "{period}，全部行社中哪些行社资金业务资产余额比年初增幅高于总资产比年初增幅，分别高出多少个百分点？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "资金业务资产占比较高",
+      "letter_metric": "资金业务资产占总资产比例",
+      "bank_metric": "资金业务总资产余额 ÷ 资产总额",
+      "original_excel_question": "XX地区哪些行社资金业务资产占总资产比例在全部行社中排名前15%，分别是多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社资金业务资产占总资产比例在全部行社中排名前15%，分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "资金业务资产占比较高",
+      "letter_metric": "资金业务不良余额",
+      "bank_metric": "资金业务不良余额",
+      "original_excel_question": "XX地区哪些行社存在资金业务不良资产，不良余额分别是多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社存在资金业务不良资产，不良余额分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "资金业务资产占比较高",
+      "letter_metric": "资金业务不良余额比年初增量",
+      "bank_metric": "资金业务不良余额比年初增量",
+      "original_excel_question": "XX地区哪些行社资金业务不良余额较年初净增加，分别增加多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社资金业务不良余额较年初净增加，分别增加多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "债券投资业务余额",
+      "bank_metric": "债券投资业务余额",
+      "original_excel_question": "XX地区各行社债券投资业务余额分别是多少？",
+      "all_banks_template": "{period}，全部行社债券投资业务余额分别是多少？",
+      "composite_template": "{period}，全部行社中哪些行社债券持仓扩张较快，利率上行时潜在损失较大？"
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "债券投资业务余额比年初增量",
+      "bank_metric": "债券投资业务余额比年初增量（取两期余额计算）",
+      "original_excel_question": "XX地区哪些行社债券投资业务余额较年初增加，分别增加多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社债券投资业务余额较年初增加，分别增加多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "债券投资业务余额比年初增幅",
+      "bank_metric": "债券投资业务余额比年初增幅",
+      "original_excel_question": "XX地区各行社债券投资业务余额比年初增幅分别是多少，哪些行社增幅在全部行社中排名前15%？",
+      "all_banks_template": "{period}，全部行社债券投资业务余额比年初增幅分别是多少，哪些行社增幅在全部行社中排名前15%？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "债券投资增幅与总资产增幅比较",
+      "bank_metric": "债券投资业务余额比年初增幅；2 资产总额比年初增幅（两者比较）",
+      "original_excel_question": "XX地区哪些行社债券投资业务余额比年初增幅高于总资产比年初增幅，分别高出多少个百分点？",
+      "all_banks_template": "{period}，全部行社中哪些行社债券投资业务余额比年初增幅高于总资产比年初增幅，分别高出多少个百分点？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "本币债券公允价值变动（浮盈/浮亏）余额",
+      "bank_metric": "",
+      "original_excel_question": "XX地区各行社本币债券公允价值变动余额分别是多少，哪些行社处于浮亏状态？",
+      "all_banks_template": "{period}，全部行社本币债券公允价值变动余额分别是多少，哪些行社处于浮亏状态？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "本币债券公允价值变动比年初变化",
+      "bank_metric": "",
+      "original_excel_question": "XX地区哪些行社本币债券公允价值变动余额较年初下降，分别下降多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社本币债券公允价值变动余额较年初下降，分别下降多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "债券收益率曲线上移5bp压力测试",
+      "bank_metric": "",
+      "original_excel_question": "债券收益率曲线上移5bp时，XX地区各行社预计公允价值损失分别是多少？",
+      "all_banks_template": "债券收益率曲线上移5bp时，{period}，全部行社预计公允价值损失分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "债券收益率曲线上移10bp压力测试",
+      "bank_metric": "",
+      "original_excel_question": "债券收益率曲线上移10bp时，XX地区各行社预计公允价值损失分别是多少？",
+      "all_banks_template": "债券收益率曲线上移10bp时，{period}，全部行社预计公允价值损失分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "债券收益率曲线上移20bp压力测试",
+      "bank_metric": "",
+      "original_excel_question": "债券收益率曲线上移20bp时，XX地区各行社预计公允价值损失分别是多少？",
+      "all_banks_template": "债券收益率曲线上移20bp时，{period}，全部行社预计公允价值损失分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "本币债券加权平均修正久期",
+      "bank_metric": "",
+      "original_excel_question": "XX地区哪些行社本币债券加权平均修正久期最长，分别是多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社本币债券加权平均修正久期最长，分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "债券投资规模及市场风险",
+      "letter_metric": "本币债券加权平均修正久期比年初变化",
+      "bank_metric": "",
+      "original_excel_question": "XX地区哪些行社本币债券加权平均修正久期较年初增加，分别增加多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社本币债券加权平均修正久期较年初增加，分别增加多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "低评级债券投资与风险暴露集中度",
+      "letter_metric": "低评级债券持有数量",
+      "bank_metric": "",
+      "original_excel_question": "XX地区各行社低评级债券持有数量分别是多少？",
+      "all_banks_template": "{period}，全部行社低评级债券持有数量分别是多少？",
+      "composite_template": "{period}，全部行社中哪些行社低评级债券持仓较多、风险暴露集中，或存在超资质投资问题？"
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "低评级债券投资与风险暴露集中度",
+      "letter_metric": "低评级债券持有面额",
+      "bank_metric": "",
+      "original_excel_question": "XX地区各行社低评级债券持有面额分别是多少？",
+      "all_banks_template": "{period}，全部行社低评级债券持有面额分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "低评级债券投资与风险暴露集中度",
+      "letter_metric": "投资资质及整改情况",
+      "bank_metric": "",
+      "original_excel_question": "XX地区哪些行社存在超资质投资或未完成的整改事项，具体情况如何？",
+      "all_banks_template": "{period}，全部行社中哪些行社存在超资质投资或未完成的整改事项，具体情况如何？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "treasury_risk",
+      "risk_point": "资金业务需加强风险管控",
+      "aspect": "低评级债券投资与风险暴露集中度",
+      "letter_metric": "非同业集团客户风险暴露集中度",
+      "bank_metric": "",
+      "original_excel_question": "XX地区哪些行社非同业集团客户风险暴露集中度在全部行社中排名前15%，分别是多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社非同业集团客户风险暴露集中度在全部行社中排名前15%，分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "capital_and_buffer",
+      "risk_point": "风险抵补能力有所削弱",
+      "aspect": "总体盈利能力下滑",
+      "letter_metric": "净利润",
+      "bank_metric": "净利润",
+      "original_excel_question": "XX地区各行社净利润分别是多少，哪些行社出现亏损？",
+      "all_banks_template": "{period}，全部行社净利润分别是多少，哪些行社出现亏损？",
+      "composite_template": "{period}，全部行社中哪些行社盈利能力下降最明显，主要受净息差还是债券收益影响？"
+    },
+    {
+      "dimension_id": "capital_and_buffer",
+      "risk_point": "风险抵补能力有所削弱",
+      "aspect": "总体盈利能力下滑",
+      "letter_metric": "净利润同比增幅",
+      "bank_metric": "净利润同比增幅",
+      "original_excel_question": "XX地区哪些行社净利润同比下降，降幅分别是多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社净利润同比下降，降幅分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "capital_and_buffer",
+      "risk_point": "风险抵补能力有所削弱",
+      "aspect": "总体盈利能力下滑",
+      "letter_metric": "营业净收入",
+      "bank_metric": "营业净收入",
+      "original_excel_question": "XX地区各行社营业净收入分别是多少？",
+      "all_banks_template": "{period}，全部行社营业净收入分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "capital_and_buffer",
+      "risk_point": "风险抵补能力有所削弱",
+      "aspect": "总体盈利能力下滑",
+      "letter_metric": "营业净收入同比增量",
+      "bank_metric": "营业净收入同比增量",
+      "original_excel_question": "XX地区哪些行社营业净收入同比减少，分别减少多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社营业净收入同比减少，分别减少多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "capital_and_buffer",
+      "risk_point": "风险抵补能力有所削弱",
+      "aspect": "总体盈利能力下滑",
+      "letter_metric": "债券投资收益同比变化",
+      "bank_metric": "",
+      "original_excel_question": "XX地区哪些行社债券投资收益同比减少，分别减少多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社债券投资收益同比减少，分别减少多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "capital_and_buffer",
+      "risk_point": "风险抵补能力有所削弱",
+      "aspect": "总体盈利能力下滑",
+      "letter_metric": "净息差",
+      "bank_metric": "净息差",
+      "original_excel_question": "XX地区哪些行社净息差在全部行社中排名后15%，分别是多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社净息差在全部行社中排名后15%，分别是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "capital_and_buffer",
+      "risk_point": "风险抵补能力有所削弱",
+      "aspect": "总体盈利能力下滑",
+      "letter_metric": "净息差同比增长点",
+      "bank_metric": "净息差同比增长点",
+      "original_excel_question": "XX地区哪些行社净息差同比收窄，分别收窄多少个百分点？",
+      "all_banks_template": "{period}，全部行社中哪些行社净息差同比收窄，分别收窄多少个百分点？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "capital_and_buffer",
+      "risk_point": "风险抵补能力有所削弱",
+      "aspect": "拨备覆盖率继续下滑",
+      "letter_metric": "拨备覆盖率",
+      "bank_metric": "拨备覆盖率",
+      "original_excel_question": "XX地区哪些行社拨备覆盖率在全部行社中排名后15%，分别是多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社拨备覆盖率在全部行社中排名后15%，分别是多少？",
+      "composite_template": "{period}，全部行社中哪些行社拨备覆盖率低于地区平均水平，且较年初继续下降？"
+    },
+    {
+      "dimension_id": "capital_and_buffer",
+      "risk_point": "风险抵补能力有所削弱",
+      "aspect": "拨备覆盖率继续下滑",
+      "letter_metric": "拨备覆盖率比年初增长点",
+      "bank_metric": "拨备覆盖率比年初增长点",
+      "original_excel_question": "XX地区哪些行社拨备覆盖率较年初下降，分别下降多少个百分点？",
+      "all_banks_template": "{period}，全部行社中哪些行社拨备覆盖率较年初下降，分别下降多少个百分点？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "capital_and_buffer",
+      "risk_point": "风险抵补能力有所削弱",
+      "aspect": "拨备覆盖率继续下滑",
+      "letter_metric": "地区平均拨备覆盖率",
+      "bank_metric": "",
+      "original_excel_question": "XX地区平均拨备覆盖率是多少？",
+      "all_banks_template": "{period}，全省平均拨备覆盖率是多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "key_business_mgmt",
+      "risk_point": "重点业务管理",
+      "aspect": "异地大额存款",
+      "letter_metric": "异地大额存款金额",
+      "bank_metric": "",
+      "original_excel_question": "XX地区各行社异地大额存款金额分别是多少？",
+      "all_banks_template": "{period}，全部行社异地大额存款金额分别是多少？",
+      "composite_template": "{period}，全部行社异地大额存款主要集中在哪些行社，哪些行社近期增长较快？"
+    },
+    {
+      "dimension_id": "key_business_mgmt",
+      "risk_point": "重点业务管理",
+      "aspect": "异地大额存款",
+      "letter_metric": "异地大额存款比年初变化",
+      "bank_metric": "",
+      "original_excel_question": "XX地区哪些行社异地大额存款金额较年初增加，分别增加多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社异地大额存款金额较年初增加，分别增加多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "key_business_mgmt",
+      "risk_point": "重点业务管理",
+      "aspect": "异地大额存款",
+      "letter_metric": "占比较大的机构较上季度变化",
+      "bank_metric": "",
+      "original_excel_question": "XX地区本期异地大额存款占比在全部行社中排名在全部行社中排名前15%的行社，其异地大额存款较上季度如何变化？",
+      "all_banks_template": "{period}，全部行社中异地大额存款占比在全部行社中排名前15%的行社，其异地大额存款较上季度如何变化？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "key_business_mgmt",
+      "risk_point": "重点业务管理",
+      "aspect": "异地贷款",
+      "letter_metric": "异地贷款余额（不含转贴现）",
+      "bank_metric": "",
+      "original_excel_question": "XX地区各行社异地贷款余额（不含转贴现）分别是多少？",
+      "all_banks_template": "{period}，全部行社异地贷款余额（不含转贴现）分别是多少？",
+      "composite_template": "{period}，全部行社中哪些行社异地贷款占比较高，且投放仍在扩大？"
+    },
+    {
+      "dimension_id": "key_business_mgmt",
+      "risk_point": "重点业务管理",
+      "aspect": "异地贷款",
+      "letter_metric": "异地贷款比年初变化",
+      "bank_metric": "",
+      "original_excel_question": "XX地区哪些行社异地贷款余额（不含转贴现）较年初增加，分别增加多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社异地贷款余额（不含转贴现）较年初增加，分别增加多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "key_business_mgmt",
+      "risk_point": "重点业务管理",
+      "aspect": "异地贷款",
+      "letter_metric": "占比较大的机构较上季度变化",
+      "bank_metric": "",
+      "original_excel_question": "XX地区本期异地贷款占比在全部行社中排名在全部行社中排名前15%的行社，其异地贷款（不含转贴现）较上季度如何变化？",
+      "all_banks_template": "{period}，全部行社中异地贷款占比在全部行社中排名前15%的行社，其异地贷款（不含转贴现）较上季度如何变化？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "key_business_mgmt",
+      "risk_point": "重点业务管理",
+      "aspect": "非涉农银团贷款",
+      "letter_metric": "非涉农银团贷款余额",
+      "bank_metric": "",
+      "original_excel_question": "XX地区各行社非涉农银团贷款余额分别是多少？",
+      "all_banks_template": "{period}，全部行社非涉农银团贷款余额分别是多少？",
+      "composite_template": "{period}，全部行社非涉农银团贷款规模和占比最大的行社是哪几家，近期是否继续增加？"
+    },
+    {
+      "dimension_id": "key_business_mgmt",
+      "risk_point": "重点业务管理",
+      "aspect": "非涉农银团贷款",
+      "letter_metric": "非涉农银团贷款比年初变化",
+      "bank_metric": "",
+      "original_excel_question": "XX地区哪些行社非涉农银团贷款余额较年初增加，分别增加多少？",
+      "all_banks_template": "{period}，全部行社中哪些行社非涉农银团贷款余额较年初增加，分别增加多少？",
+      "composite_template": ""
+    },
+    {
+      "dimension_id": "key_business_mgmt",
+      "risk_point": "重点业务管理",
+      "aspect": "非涉农银团贷款",
+      "letter_metric": "占比较大的机构较上季度变化",
+      "bank_metric": "",
+      "original_excel_question": "XX地区本期非涉农银团贷款占比在全部行社中排名在全部行社中排名前15%的行社，其非涉农银团贷款较上季度如何变化？",
+      "all_banks_template": "{period}，全部行社中非涉农银团贷款占比在全部行社中排名前15%的行社，其非涉农银团贷款较上季度如何变化？",
+      "composite_template": ""
+    }
+  ]
+}

@@ -9,7 +9,7 @@ import time
 import pytest
 from sqlalchemy import select
 
-from test_api_workflow import api, good
+from test_api_workflow import good
 from test_code_workflow import large_demo
 from test_code_runner import docker_ready
 

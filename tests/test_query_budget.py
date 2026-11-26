@@ -73,6 +73,31 @@ def test_failed_request_and_nested_helper_share_cumulative_ledger(store, monkeyp
     assert state(store)["requests"] == 2
 
 
+def test_scan_default_budget_and_explicit_override(store, monkeypatch):
+    """扫描扩容至 600，旧任务仍为 200，显式上限对两类任务都生效。"""
+    m, budget = store.models, store.budget
+    monkeypatch.delenv("RISK_QUERY_MAX_REQUESTS")
+    with store.factory.begin() as db:
+        db.get(m.AnalysisRun, "run-a").selection = {"kind": "risk_scan"}
+        db.add(m.QueryBudgetLedger(run_id="run-a", requests_used=599))
+        db.add(m.QueryBudgetLedger(run_id="run-b", requests_used=200))
+    with budget.business_operation("run-a", "report"):
+        pass
+    for key in ("run-a", "run-b"):
+        with pytest.raises(budget.BudgetError) as error:
+            with budget.business_operation(key, "follow-up"):
+                pytest.fail("任务已到达默认额度")
+        assert error.value.code == "QUERY_BUDGET_EXCEEDED"
+    monkeypatch.setenv("RISK_QUERY_MAX_REQUESTS", "601")
+    with budget.business_operation("run-a", "explicit-limit"):
+        pass
+    monkeypatch.setenv("RISK_QUERY_MAX_REQUESTS", "1")
+    with pytest.raises(budget.BudgetError) as error:
+        with budget.business_operation("run-a", "lower-limit"):
+            pytest.fail("显式额度低于扫描默认值时仍应生效")
+    assert error.value.code == "QUERY_BUDGET_EXCEEDED"
+
+
 def test_completed_and_failed_calls_count_toward_rolling_minute(store, monkeypatch):
     budget, m = store.budget, store.models
     monkeypatch.setenv("RISK_QUERY_RATE_PER_MINUTE", "1")

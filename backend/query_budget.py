@@ -38,8 +38,9 @@ class BudgetLimits:
     timeout_seconds: float = 30
 
     @classmethod
-    def from_env(cls) -> BudgetLimits:
-        defaults = cls()
+    def from_env(cls, run_kind: str | None = None) -> BudgetLimits:
+        # 扫描还要为多家行社分别撰函；显式配置继续优先于任务默认值。
+        defaults = cls(max_requests=600) if run_kind == "risk_scan" else cls()
         fields = {
             "max_requests": "RISK_QUERY_MAX_REQUESTS",
             "rate_per_minute": "RISK_QUERY_RATE_PER_MINUTE",
@@ -154,13 +155,16 @@ class QueryTicket:
         self._closed = True
 
 
-def _admit(run_id: str, operation: str, limits: BudgetLimits, cancelled) -> QueryTicket:
+def _admit(run_id: str, operation: str, cancelled) -> QueryTicket:
     if not isinstance(operation, str) or not operation or len(operation) > 100:
         raise BudgetError("INVALID_ARGUMENT", "业务操作名称须为1至100字文本")
     started = time.time()
     with _atomic() as db:
-        if db.get(AnalysisRun, run_id) is None:
+        task = db.execute(select(AnalysisRun.selection["kind"].as_string())
+                          .where(AnalysisRun.id == run_id)).one_or_none()
+        if task is None:
             raise BudgetError("INVALID_TASK", "任务不存在，不能申请查询额度")
+        limits = BudgetLimits.from_env(task[0])
         ledger = db.get(QueryBudgetLedger, run_id)
         if ledger is None:
             ledger = QueryBudgetLedger(run_id=run_id, requests_used=0, export_rows=0, export_bytes=0)
@@ -196,7 +200,7 @@ def business_operation(run_id: str, operation: str, *, cancelled: Callable[[], b
         parent.check_cancelled()
         yield parent
         return
-    ticket = _admit(run_id, operation, BudgetLimits.from_env(), cancelled)
+    ticket = _admit(run_id, operation, cancelled)
     token = _current.set(ticket)
     try:
         ticket.check_cancelled()

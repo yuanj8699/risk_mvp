@@ -1,0 +1,193 @@
+﻿/* 轨迹视图以记录行对齐三轨刻度，选中状态跨时间轴和明细共享。 */
+.trace-workspace {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+  background: #fff;
+}
+.trace-commandbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  column-gap: 12px;
+  row-gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e5eaf2;
+}
+.trace-commandbar select {
+  max-width: 195px;
+  height: 26px;
+  border: 1px solid #e5eaf2;
+  border-radius: 4px;
+  color: #475569;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  padding: 0 6px;
+}
+.trace-modes { display: inline-flex; gap: 2px; }
+.trace-modes button {
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font: inherit;
+  color: #475569;
+  background: transparent;
+  cursor: pointer;
+}
+.trace-modes button::before {
+  display: inline-block;
+  content: '';
+  border: 1px solid currentColor;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 2px;
+}
+.trace-modes button[aria-pressed=true] { color: #1d4ed8; background: #eff6ff; font-weight: 600; }
+.trace-modes button[aria-pressed=true]::before { border-radius: 50%; background: currentColor; }
+.trace-modes button:hover { background: #f1f5f9; }
+.trace-fold {
+  padding: 3px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  background: #fff;
+  color: #475569;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.trace-fold[aria-pressed=true] { color: #315b87; background: #f3f7fb; }
+.trace-gap { position: absolute; top: 0; bottom: 0; background: #f7f9fb; cursor: help; }
+.trace-gap::after {
+  content: '';
+  position: absolute;
+  inset: 1px auto 1px 50%;
+  border-left: 1px dashed #94a3b8;
+  transform: skewX(-12deg);
+}
+.trace-search { margin-left: auto; width: 190px; max-width: 100%; }
+.trace-map { padding: 10px 16px 7px; border-bottom: 1px solid #e5eaf2; }
+.trace-map-row { display: flex; align-items: center; gap: 12px; height: 16px; }
+.trace-map-row > span { flex: 0 0 28px; font-size: 11px; color: #475569; }
+.trace-map-track { flex: 1; position: relative; min-width: 0; height: 100%; }
+.trace-map-track::before { position: absolute; top: 50%; left: 0; right: 0; height: 1px; content: ''; background: #eaecf0; }
+.trace-mark {
+  position: absolute;
+  min-width: 2px;
+  width: 3px;
+  padding: 0;
+  border: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.trace-mark::after { content: ''; display: block; height: 8px; width: 100%; background: #ea580c; }
+.trace-mark.input { width: 2px; }
+.trace-mark.input::after { background: #16a34a; }
+.trace-mark.request::after { height: 4px; background: #75a7fa; }
+.trace-mark.selected { z-index: 1; outline: 1px solid #2563eb; }
+.trace-workspace :is(button, summary, select):focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+.trace-map-meta { display: flex; gap: 12px; align-items: center; font-size: 11px; color: #64748b; margin-top: 4px; }
+.trace-map-meta .trace-count { margin-left: auto; white-space: nowrap; }
+.trace-events { overflow-y: auto; min-height: 0; padding: 0 16px 16px; }
+.trace-phase h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  margin: 3px 0 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+.trace-phase h3::before, .trace-line::before {
+  content: '';
+  display: block;
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+.trace-event { margin-left: 8px; border-bottom: 1px solid #eaecf0; }
+.trace-line {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  padding: 3px 6px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: #fff;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+.trace-line::before { width: 4px; height: 4px; background: #a2acb8; }
+.trace-line:hover { background: #f8fafc; }
+.trace-event.chosen .trace-line { background: #eff6ff; }
+.trace-role {
+  min-width: 42px;
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  color: #334155;
+  background: #f1f5f9;
+}
+.trace-role.role-context { color: #166534; background: #ecfdf5; }
+.trace-role.role-user { color: #1e40af; background: #dbeafe; }
+.trace-role.role-request, .trace-role.role-assistant { color: #1d4ed8; background: #eff6ff; }
+.trace-role.role-tool, .trace-role.role-smartq { color: #9a3412; background: #fff7ed; }
+.trace-description { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trace-description strong { font-weight: 550; }
+.trace-thought { display: block; overflow: hidden; text-overflow: ellipsis; color: #435675; }
+.trace-thought b { color: #185e81; }
+.trace-inspector pre.trace-reasoning { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }
+.trace-description code, .trace-inspector pre {
+  font-family: ui-monospace, Consolas, 'Microsoft YaHei', monospace;
+  font-size: 12px;
+}
+.trace-description code { color: #475569; }
+.trace-line small { color: #64748b; font-size: 11px; white-space: nowrap; }
+.trace-inspector {
+  margin: 0;
+  padding: 8px 14px 12px 30px;
+  background: #f8fafc;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.trace-inspector dl { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 0; margin: 0 0 8px; }
+.trace-inspector dl > div { display: flex; gap: 6px; }
+.trace-inspector dd { margin: 0; }
+.trace-inspector dt, .trace-inspector small { color: #64748b; }
+.trace-inspector h4, .trace-inspector summary { margin: 6px 0 2px; font-weight: 600; }
+.trace-inspector pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 3px 0; color: #334155; line-height: 1.55; }
+.trace-notice { color: #64748b; padding: 10px 16px; margin: 0; }
+.trace-warning { color: #9a3412; }
+@media (max-width: 700px) {
+  .trace-commandbar { column-gap: 6px; padding: 8px 10px; }
+  .trace-commandbar select { max-width: 165px; }
+  .trace-modes button { padding: 5px 7px; }
+  .trace-search { min-width: 122px; width: auto; flex: 1; }
+  .trace-map { padding: 8px 10px; }
+  .trace-map-meta { flex-wrap: wrap; gap: 2px 8px; }
+  .trace-events { padding: 0 8px 10px; }
+  .trace-line { min-height: 36px; gap: 6px; }
+  .trace-line small { display: none; }
+  .trace-inspector { padding-left: 10px; }
+}

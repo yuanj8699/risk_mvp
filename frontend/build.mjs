@@ -7,9 +7,14 @@ import { dirname, resolve } from 'node:path';
 const root = dirname(fileURLToPath(import.meta.url));
 await mkdir(resolve(root, 'dist'), { recursive: true });
 await build({
-  entryPoints: [resolve(root, 'src/main.ts')],
-  outfile: resolve(root, 'dist/app.js'),
+  absWorkingDir: root,
+  entryPoints: ['./src/main.ts'],
+  preserveSymlinks: true,
+  outfile: 'dist/app.js',
   bundle: true,
+  // TDesign 的 es 入口使用 .mjs，逐个组件自带已编译的本地 CSS。
+  resolveExtensions: ['.ts', '.mjs', '.js', '.json', '.css'],
+  platform: 'browser',
   minify: true,
   sourcemap: false,
   target: ['es2020'],

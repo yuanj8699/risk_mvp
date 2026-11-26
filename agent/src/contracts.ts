@@ -78,16 +78,47 @@ export type ExploreResult = (ExplorationSubmission | ZeroCandidates) & {
 };
 
 /** 追问所用的证据及最近对话均由 Python 按选中任务和机构加载。 */
-export type FollowUpEvidence = { id: string; label: string; text: string };
+export type FollowUpEvidence = { id: string; label: string; text: string; source?: string };
+export type SmartQQueryType = "single" | "total" | "diff" | "ratio" | "rank" | "extremum"
+  | "detail" | "count" | "yoy" | "mom" | "check" | "filter" | "other";
+export type SmartQLookupRequest = {
+  rewritten_question: string; reason: string; metric_hint: string;
+  target_org: string; target_date: string; query_type: SmartQQueryType;
+};
 export type FollowUpRequest = {
   operation: "follow_up";
   question: string;
   context: { topic: string; as_of: string; organization: string };
-  history: { question: string; answer: string }[];
+  history: { question: string; answer: string; rewritten_question?: string }[];
   evidence: FollowUpEvidence[];
+  smartq?: { enabled: boolean; attempted?: boolean; status?: "ok" | "empty" | "error" | "unavailable";
+    note?: string; rewritten_question?: string; domain_guidance?: string };
 };
-export type FollowUpResult = { answer: string; evidence_ids: string[]; trace: AgentTrace[]; runtime: RuntimeInfo };
-export type RiskAgentRequest = SelectRequest | ExplainBatchRequest | ExploreRequest | FollowUpRequest;
+export type FollowUpResult = { answer: string; evidence_ids: string[]; trace: AgentTrace[]; runtime: RuntimeInfo;
+  smartq_lookup?: SmartQLookupRequest };
+
+/** 全辖初筛候选及其原始观测；归并只能引用同一机构的有效观测。 */
+export type SynthesisEvidence = { evidence_id: string; org_id: string; quality_status: string; value: string | number | null; [key: string]: unknown };
+export type SynthesisSignal = { evidence_id: string; dimension_id: string; aspect: string; reason: string; [key: string]: unknown };
+export type SynthesisCandidate = { org_id: string; org_name: string; signals: SynthesisSignal[]; evidence: SynthesisEvidence[] };
+export type SynthesizeRequest = {
+  operation: "synthesize_risks"; budget_ms: number; knowledge_prompt: string; dimension_ids: string[];
+  validation_summary: Record<string, unknown> & { visibility?: { clipped: boolean } };
+  candidates: SynthesisCandidate[];
+};
+export type SynthesisIssue = { org_id: string; dimension_id: string; aspect: string; title: string; severity: string;
+  cause_analysis: string; check_suggestion: string; evidence_ids: string[] };
+export type SynthesizeResult = { mode: ResultMode; issues: SynthesisIssue[]; executive_summary: string; trace: AgentTrace[]; runtime: RuntimeInfo };
+export type LetterMetric = { indicator_id: string; indicator_name: string; evidence_id: string; value: string | number; unit: string;
+  value_display: string; formal_display?: string; data_date: string; rank: number | null; population: number | null };
+export type LetterBrief = { run_id: string; org_id: string; org_name: string; region_name: string; period_label: string; data_date: string;
+  issue_date: string; business_overview: LetterMetric[]; available_dimensions: {dimension_id: string; dimension_title: string}[];
+  signal_overview: Record<string, unknown>; mandatory_p0_evidence_ids: string[]; allowed_evidence_ids: string[] };
+export type LetterParagraph = { heading: string; body: string };
+export type StructuredLetter = { title: string; recipient: string; opening: string; overview: string; risk_sections: (LetterParagraph & { evidence_ids: string[] })[]; suggestions: LetterParagraph[]; closing_requirement: string; appendix_evidence_ids: string[] };
+export type DraftLetterRequest = { operation: 'draft_risk_letter'; budget_ms: number; brief: LetterBrief };
+export type DraftLetterResult = { letter: StructuredLetter; read_evidence_ids: string[]; trace: AgentTrace[]; runtime: RuntimeInfo };
+export type RiskAgentRequest = SelectRequest | ExplainBatchRequest | ExploreRequest | FollowUpRequest | SynthesizeRequest | DraftLetterRequest;
 
 /** 建议须引用本事件证据；引用有效不代表原因已经查实。 */
 export type Proposal = { text: string; evidence_ids: string[] };
@@ -98,7 +129,7 @@ export type AgentTrace = {
   id?: string;
   parent_id?: string;
   case_key?: string;
-  phase?: "select" | "explain" | "explore" | "follow_up";
+  phase?: "select" | "explain" | "explore" | "follow_up" | "synthesize_risks" | "draft_risk_letter";
   started_at?: string;
   event: "request" | "tool";
   transport?: "mcp" | "local";
@@ -166,7 +197,7 @@ export type CaseAnalysis = ResultMetadata & {
 };
 
 export type ExplainBatchResult = { analyses: Record<string, CaseAnalysis> };
-export type RiskAgentResult = SelectResult | ExplainBatchResult | ExploreResult | FollowUpResult;
+export type RiskAgentResult = SelectResult | ExplainBatchResult | ExploreResult | FollowUpResult | SynthesizeResult | DraftLetterResult;
 
 /** CLI失败时返回此结构并以退出码1结束，不输出原始模型响应或认证信息。 */
 export type AgentErrorResponse = { error: { code: string; message: string }; diagnostics?: AgentDiagnostics };
